@@ -1,0 +1,17 @@
+{
+    "name": "AccIssuePins",
+    "displayname": "ACC Issue Pins",
+    "description": "Loads ACC issues for the active project and draws issue pins directly inside the APS Viewer.",
+    "loadonstartup": "true",
+    "includeinlist": "false",
+    "editoptions": "false",
+    "filestoload": {
+        "jsfiles": [
+            "main.js"
+        ],
+        "cssfiles": [
+            "main.css"
+        ]
+    },
+    "options": {}
+}

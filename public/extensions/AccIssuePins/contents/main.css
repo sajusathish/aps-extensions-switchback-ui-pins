@@ -1,0 +1,31 @@
+.acc-issue-pin {
+  position: absolute;
+  z-index: 60;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 18px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.acc-issue-pin:hover,
+.acc-issue-pin.selected {
+  background: #d97706;
+  transform: translate(-50%, -50%) scale(1.15);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.35), 0 3px 10px rgba(0, 0, 0, 0.45);
+}
+
+.acc-issue-pin.hidden-pin {
+  display: none;
+}

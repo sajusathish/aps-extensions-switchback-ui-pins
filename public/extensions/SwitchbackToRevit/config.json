@@ -1,0 +1,17 @@
+{
+    "name": "SwitchbackToRevit",
+    "displayname": "Switchback To Revit",
+    "description": "Adds a viewer toolbar button that writes the current APS viewer camera/view state to switchback-output/latest-switchback.json for a Revit add-in or file watcher to consume.",
+    "loadonstartup": "true",
+    "includeinlist": "true",
+    "editoptions": "false",
+    "filestoload": {
+        "jsfiles": [
+            "main.js"
+        ],
+        "cssfiles": [
+            "main.css"
+        ]
+    },
+    "options": {}
+}

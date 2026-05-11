@@ -1,0 +1,14 @@
+.switchback-to-revit-button .adsk-button-icon {
+  background-image: none !important;
+  position: relative;
+}
+
+.switchback-to-revit-button .adsk-button-icon::before {
+  content: "↩";
+  color: #ffffff;
+  font-size: 21px;
+  font-weight: 700;
+  position: absolute;
+  left: 8px;
+  top: 3px;
+}
