@@ -9,7 +9,6 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
     this.selectedIssueId = null;
     this.selectedPin = null;
-
     this.activeFilters = null;
 
     this.cropWaitMs = 1200;
@@ -706,6 +705,8 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     document.dispatchEvent(new CustomEvent('accissuefilterresult', {
       detail: {
         visible: issuesToDraw.length,
+        shown: drawable,
+        skipped,
         total: this.issues.length
       }
     }));
@@ -729,12 +730,22 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     this.issuePins.forEach(existing => existing.element.classList.remove('selected'));
     pin.element.classList.add('selected');
 
+    const modelData = this.viewer?.model?.getData?.() || {};
+    const globalOffset = modelData.globalOffset || null;
+
     window.accIssuePinsSelectedIssue = {
       id: this.selectedIssueId,
       displayId: this.getIssueDisplayId(pin.issue),
       title: this.getIssueTitle(pin.issue),
       status: this.getIssueStatus(pin.issue),
       worldPoint: pin.worldPoint.toArray(),
+      globalOffset: globalOffset
+        ? {
+            x: Number(globalOffset.x || 0),
+            y: Number(globalOffset.y || 0),
+            z: Number(globalOffset.z || 0)
+          }
+        : null,
       sectionBoxSize: this.sectionBoxSize,
       autoSectionEnabled: this.autoSectionEnabled
     };
@@ -763,35 +774,90 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     const nav = this.viewer.navigation;
 
     try {
-      const eye = this.vectorFromAny(viewport.eye || viewport.position || viewport.camera?.position);
-      const target = this.vectorFromAny(viewport.target || viewport.pivotPoint || viewport.center);
-      const up = this.vectorFromAny(viewport.up || viewport.worldUpVector || viewport.camera?.up);
+      const eye = this.vectorFromAny(
+        viewport.eye ||
+        viewport.position ||
+        viewport.camera?.position
+      );
 
-      if (eye && target && typeof nav.setView === 'function') {
-        nav.setView(
-          new THREE.Vector3(eye.x, eye.y, eye.z),
-          new THREE.Vector3(target.x, target.y, target.z)
-        );
-      } else if (target && typeof nav.setTarget === 'function') {
-        nav.setTarget(new THREE.Vector3(target.x, target.y, target.z));
-      }
+      const target = this.vectorFromAny(
+        viewport.pivotPoint ||
+        viewport.target ||
+        viewport.center
+      );
 
-      if (up && typeof nav.setCameraUpVector === 'function') {
-        nav.setCameraUpVector(new THREE.Vector3(up.x, up.y, up.z));
-      }
+      const up = this.vectorFromAny(
+        viewport.up ||
+        viewport.worldUpVector ||
+        viewport.camera?.up
+      );
+
+      const eyeVector = eye
+        ? new THREE.Vector3(Number(eye.x), Number(eye.y), Number(eye.z))
+        : null;
+
+      const targetVector = target
+        ? new THREE.Vector3(Number(target.x), Number(target.y), Number(target.z))
+        : null;
+
+      const upVector = up
+        ? new THREE.Vector3(Number(up.x), Number(up.y), Number(up.z))
+        : null;
 
       if (viewport.projection) {
-        if (String(viewport.projection).toLowerCase().includes('perspective') && typeof nav.toPerspective === 'function') {
+        const projection = String(viewport.projection).toLowerCase();
+
+        if (projection.includes('perspective') && typeof nav.toPerspective === 'function') {
           nav.toPerspective();
         }
 
-        if (String(viewport.projection).toLowerCase().includes('orthographic') && typeof nav.toOrthographic === 'function') {
+        if (projection.includes('orthographic') && typeof nav.toOrthographic === 'function') {
           nav.toOrthographic();
         }
       }
 
+      if (eyeVector && targetVector && typeof nav.setView === 'function') {
+        nav.setView(eyeVector, targetVector);
+      } else {
+        if (eyeVector && typeof nav.setPosition === 'function') {
+          nav.setPosition(eyeVector);
+        }
+
+        if (targetVector && typeof nav.setTarget === 'function') {
+          nav.setTarget(targetVector);
+        }
+      }
+
+      if (targetVector && typeof nav.setPivotPoint === 'function') {
+        nav.setPivotPoint(targetVector);
+      }
+
+      if (upVector && typeof nav.setCameraUpVector === 'function') {
+        nav.setCameraUpVector(upVector);
+      }
+
       if (viewport.fieldOfView && typeof nav.setVerticalFov === 'function') {
         nav.setVerticalFov(Number(viewport.fieldOfView), true);
+      }
+
+      if (
+        viewport.orthographicHeight &&
+        this.viewer.getCamera &&
+        this.viewer.getCamera()?.isOrthographicCamera
+      ) {
+        const camera = this.viewer.getCamera();
+        const aspect = Number(viewport.aspectRatio || camera.aspect || 1.3333333333);
+        const height = Number(viewport.orthographicHeight);
+        const width = height * aspect;
+
+        camera.left = -width / 2;
+        camera.right = width / 2;
+        camera.top = height / 2;
+        camera.bottom = -height / 2;
+
+        if (typeof camera.updateProjectionMatrix === 'function') {
+          camera.updateProjectionMatrix();
+        }
       }
 
       if (this.viewer.impl && typeof this.viewer.impl.invalidate === 'function') {
@@ -799,6 +865,16 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       }
 
       this.schedulePinUpdate();
+
+      console.log('[ACC Issue Pins] Restored issue viewport using pivot-first target:', {
+        eye: eyeVector ? eyeVector.toArray() : null,
+        target: targetVector ? targetVector.toArray() : null,
+        up: upVector ? upVector.toArray() : null,
+        originalViewportTarget: viewport.target || null,
+        originalViewportPivotPoint: viewport.pivotPoint || null,
+        distanceToOrbit: viewport.distanceToOrbit || null
+      });
+
       return true;
     } catch (error) {
       console.warn('[ACC Issue Pins] Could not restore viewport only. Falling back to current view.', error);
@@ -1181,92 +1257,251 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   }
 
   getBestWorldPoint(issue) {
-    const candidates = this.getWorldPointCandidates(issue);
+    const rawPoint = this.getPrimaryAccPushpinPoint(issue);
 
-    if (candidates.length === 0) return null;
+    if (!rawPoint || !this.isFiniteVector(rawPoint)) {
+      const pivotFallback = this.getIssuePivotPoint(issue);
 
-    const bbox = this.viewer.model.getBoundingBox();
-    const center = bbox.getCenter(new THREE.Vector3());
-    const size = bbox.getSize(new THREE.Vector3());
-    const radius = Math.max(size.length(), 1);
+      if (pivotFallback && this.isFiniteVector(pivotFallback)) {
+        return pivotFallback;
+      }
 
-    const scored = candidates
-      .map(candidate => {
-        const distance = candidate.point.distanceTo(center);
-        const inside = bbox.containsPoint(candidate.point);
-        const score = (inside ? 0 : radius) + distance + candidate.penalty;
-
-        return {
-          ...candidate,
-          score,
-          inside,
-          distance
-        };
-      })
-      .sort((a, b) => a.score - b.score);
-
-    return scored[0]?.point || null;
-  }
-
-  getWorldPointCandidates(issue) {
-    const candidates = [];
-    const viewerState = this.getIssueViewerState(issue);
-    const statePoint = this.getVectorFromViewerState(viewerState);
-
-    if (statePoint) {
-      candidates.push({
-        source: 'viewerState',
-        point: new THREE.Vector3(statePoint.x, statePoint.y, statePoint.z),
-        penalty: 0
-      });
+      return null;
     }
 
-    const rawPosition = this.getIssueRawPosition(issue);
+    const model = this.viewer?.model;
 
-    if (!rawPosition) return candidates;
+    if (!model || typeof model.getBoundingBox !== 'function') {
+      return rawPoint;
+    }
 
-    const raw = new THREE.Vector3(rawPosition.x, rawPosition.y, rawPosition.z);
+    const bbox = model.getBoundingBox();
 
-    candidates.push({
-      source: 'raw',
-      point: raw.clone(),
-      penalty: 20
+    if (!bbox || (typeof bbox.isEmpty === 'function' && bbox.isEmpty())) {
+      return rawPoint;
+    }
+
+    const candidates = this.getPointCandidatesForCurrentModel(issue, rawPoint, bbox);
+
+    const expandedBox = bbox.clone ? bbox.clone() : new THREE.Box3(bbox.min.clone(), bbox.max.clone());
+    const modelSize = new THREE.Vector3();
+    expandedBox.getSize(modelSize);
+
+    const tolerance = Math.max(modelSize.length() * 0.02, 1.0);
+    expandedBox.expandByScalar(tolerance);
+
+    const insideCandidates = candidates
+      .filter(candidate => expandedBox.containsPoint(candidate.point))
+      .sort((a, b) => a.priority - b.priority);
+
+    if (insideCandidates.length > 0) {
+      const best = insideCandidates[0];
+
+      console.log('[ACC Issue Pins] Pin placed using coordinate candidate:', {
+        issueId: this.getIssueDisplayId(issue),
+        method: best.name,
+        rawPoint: rawPoint.toArray(),
+        finalPoint: best.point.toArray(),
+        modelBoxMin: bbox.min.toArray(),
+        modelBoxMax: bbox.max.toArray(),
+        candidateList: candidates.map(candidate => ({
+          name: candidate.name,
+          priority: candidate.priority,
+          point: candidate.point.toArray(),
+          inside: expandedBox.containsPoint(candidate.point)
+        }))
+      });
+
+      return best.point;
+    }
+
+    const clamped = this.clampPointToBox(rawPoint, bbox);
+
+    console.warn('[ACC Issue Pins] No candidate landed inside model box. Using clamped fallback so pin remains visible.', {
+      issueId: this.getIssueDisplayId(issue),
+      rawPoint: rawPoint.toArray(),
+      clampedPoint: clamped.toArray(),
+      modelBoxMin: bbox.min.toArray(),
+      modelBoxMax: bbox.max.toArray(),
+      candidateList: candidates.map(candidate => ({
+        name: candidate.name,
+        priority: candidate.priority,
+        point: candidate.point.toArray(),
+        inside: expandedBox.containsPoint(candidate.point)
+      }))
     });
 
-    const modelData = this.viewer.model.getData() || {};
-    const globalOffset = modelData.globalOffset || null;
+    return clamped;
+  }
 
-    if (globalOffset) {
-      const offset = new THREE.Vector3(
-        globalOffset.x || 0,
-        globalOffset.y || 0,
-        globalOffset.z || 0
-      );
+  getPointCandidatesForCurrentModel(issue, rawPoint, bbox) {
+    const modelData = this.viewer?.model?.getData?.() || {};
+    const globalOffset = modelData.globalOffset || { x: 0, y: 0, z: 0 };
 
-      candidates.push({
-        source: 'raw-minus-globalOffset',
+    const offset = new THREE.Vector3(
+      Number(globalOffset.x || 0),
+      Number(globalOffset.y || 0),
+      Number(globalOffset.z || 0)
+    );
+
+    const raw = rawPoint.clone
+      ? rawPoint.clone()
+      : new THREE.Vector3(Number(rawPoint.x), Number(rawPoint.y), Number(rawPoint.z));
+
+    const modelCenter = bbox.getCenter(new THREE.Vector3());
+    const pivot = this.getIssuePivotPoint(issue);
+
+    const candidates = [
+      {
+        name: 'Raw ACC position',
+        point: raw.clone(),
+        priority: 50
+      },
+      {
+        name: 'Raw - current model globalOffset',
         point: raw.clone().sub(offset),
-        penalty: 2
-      });
-
-      candidates.push({
-        source: 'raw-plus-globalOffset',
+        priority: 60
+      },
+      {
+        name: 'Raw + current model globalOffset',
         point: raw.clone().add(offset),
-        penalty: 40
+        priority: 90
+      },
+      {
+        name: 'Raw - Z globalOffset only',
+        point: new THREE.Vector3(raw.x, raw.y, raw.z - offset.z),
+        priority: 80
+      },
+      {
+        name: 'Raw + Z globalOffset only',
+        point: new THREE.Vector3(raw.x, raw.y, raw.z + offset.z),
+        priority: 100
+      }
+    ];
+
+    if (pivot && this.isFiniteVector(pivot)) {
+      const deltaFromIssuePivot = raw.clone().sub(pivot);
+
+      candidates.unshift({
+        name: 'XYZ transposed using issue pivot and model centre',
+        point: modelCenter.clone().add(deltaFromIssuePivot),
+        priority: 1
       });
-    }
 
-    const placement = modelData.placementTransform || null;
-
-    if (placement && typeof placement.clone === 'function') {
       candidates.push({
-        source: 'placementTransform',
-        point: raw.clone().applyMatrix4(placement),
-        penalty: 5
+        name: 'Z transposed using issue pivot and model centre',
+        point: new THREE.Vector3(raw.x, raw.y, modelCenter.z + deltaFromIssuePivot.z),
+        priority: 20
+      });
+
+      candidates.push({
+        name: 'Pivot transposed to model centre',
+        point: modelCenter.clone(),
+        priority: 30
       });
     }
 
     return candidates;
+  }
+
+  clampPointToBox(point, box) {
+    const x = Math.max(box.min.x, Math.min(box.max.x, point.x));
+    const y = Math.max(box.min.y, Math.min(box.max.y, point.y));
+    const z = Math.max(box.min.z, Math.min(box.max.z, point.z));
+
+    return new THREE.Vector3(x, y, z);
+  }
+
+  getPrimaryAccPushpinPoint(issue) {
+    const linkedDocuments =
+      issue?.linkedDocuments ||
+      issue?.attributes?.linkedDocuments ||
+      [];
+
+    for (const linkedDocument of linkedDocuments) {
+      const details = linkedDocument?.details || {};
+
+      const position =
+        details?.position ||
+        details?.pushpinPosition ||
+        details?.viewerPosition ||
+        details?.point ||
+        linkedDocument?.position ||
+        null;
+
+      const vector = this.vectorFromAny(this.parseJsonIfString(position) || position);
+
+      if (this.isFiniteVector(vector)) {
+        return new THREE.Vector3(vector.x, vector.y, vector.z);
+      }
+    }
+
+    const placements =
+      issue?.placements ||
+      issue?.attributes?.placements ||
+      [];
+
+    for (const placement of placements) {
+      const details = placement?.details || {};
+
+      const position =
+        details?.position ||
+        details?.pushpinPosition ||
+        details?.viewerPosition ||
+        details?.point ||
+        placement?.position ||
+        null;
+
+      const vector = this.vectorFromAny(this.parseJsonIfString(position) || position);
+
+      if (this.isFiniteVector(vector)) {
+        return new THREE.Vector3(vector.x, vector.y, vector.z);
+      }
+    }
+
+    const directCandidates = [
+      issue?.placement?.details?.position,
+      issue?.placement?.details?.pushpinPosition,
+      issue?.placement?.details?.viewerPosition,
+      issue?.placement?.details?.point,
+      issue?.placement?.position,
+      issue?.pushpin?.position,
+      issue?.pushpinPosition,
+      issue?.position
+    ];
+
+    for (const candidate of directCandidates) {
+      const vector = this.vectorFromAny(this.parseJsonIfString(candidate) || candidate);
+
+      if (this.isFiniteVector(vector)) {
+        return new THREE.Vector3(vector.x, vector.y, vector.z);
+      }
+    }
+
+    return null;
+  }
+
+  getIssuePivotPoint(issue) {
+    const viewerState = this.getIssueViewerState(issue);
+    const viewport = viewerState?.viewport || viewerState?.state?.viewport || null;
+
+    const candidates = [
+      viewport?.pivotPoint,
+      viewport?.center,
+      viewerState?.pivotPoint,
+      viewerState?.target,
+      viewport?.target
+    ];
+
+    for (const candidate of candidates) {
+      const vector = this.vectorFromAny(candidate);
+
+      if (this.isFiniteVector(vector)) {
+        return new THREE.Vector3(vector.x, vector.y, vector.z);
+      }
+    }
+
+    return null;
   }
 
   getIssueViewerState(issue) {
@@ -1286,56 +1521,6 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     for (const candidate of candidates) {
       const parsed = this.parseJsonIfString(candidate);
       if (parsed) return parsed;
-    }
-
-    return null;
-  }
-
-  getVectorFromViewerState(viewerState) {
-    const viewport = viewerState?.viewport || viewerState?.state?.viewport || null;
-
-    const candidates = [
-      viewport?.pivotPoint,
-      viewport?.target,
-      viewport?.center,
-      viewerState?.pivotPoint,
-      viewerState?.target
-    ];
-
-    for (const candidate of candidates) {
-      const vector = this.vectorFromAny(candidate);
-      if (this.isFiniteVector(vector)) return vector;
-    }
-
-    return null;
-  }
-
-  getIssueRawPosition(issue) {
-    const linkedDocument =
-      issue?.linkedDocuments?.[0] ||
-      issue?.attributes?.linkedDocuments?.[0] ||
-      null;
-
-    const candidates = [
-      issue?.position,
-      issue?.placement?.position,
-      issue?.placement?.details?.position,
-      issue?.placements?.[0]?.position,
-      issue?.placements?.[0]?.details?.position,
-      linkedDocument?.position,
-      linkedDocument?.details?.position,
-      linkedDocument?.details?.pushpinPosition,
-      linkedDocument?.details?.viewerPosition,
-      linkedDocument?.details?.point,
-      linkedDocument?.details?.location,
-      issue?.pushpin?.position,
-      issue?.pushpinPosition
-    ];
-
-    for (const candidate of candidates) {
-      const parsed = this.parseJsonIfString(candidate);
-      const vector = this.vectorFromAny(parsed || candidate);
-      if (this.isFiniteVector(vector)) return vector;
     }
 
     return null;
@@ -1391,6 +1576,13 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
   normalise(value) {
     return String(value || '').trim().toLowerCase();
+  }
+
+  normaliseGuid(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[{}]/g, '');
   }
 
   getIssueId(issue) {
