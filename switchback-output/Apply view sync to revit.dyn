@@ -1,0 +1,205 @@
+{
+  "Uuid": "86149aa9-eef3-4981-af32-8bd8f68f802a",
+  "IsCustomNode": false,
+  "Description": "",
+  "Name": "Apply view sync to revit",
+  "ElementResolver": {
+    "ResolutionMap": {}
+  },
+  "Inputs": [],
+  "Outputs": [],
+  "Nodes": [
+    {
+      "ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels",
+      "Code": "# Dynamo Python for Revit\r\n# IN[0] = filepath to latest-switchback.json\r\n#\r\n# Switchback sync:\r\n# - Camera from payload.revitViewport\r\n# - Centre Revit viewport on the camera target point\r\n# - Section box from payload.section.sectionBox if available\r\n# - Converts APS section box points using model.globalOffset\r\n# - If ACC/APS has no section, turns OFF Revit active 3D view section box\r\n#\r\n# Does NOT:\r\n# - Move elements\r\n# - Hide/isolate elements\r\n# - Change element graphics\r\n# - Create a new view\r\n#\r\n# It only changes:\r\n# - Active 3D view orientation\r\n# - Active 3D view viewport zoom/centre\r\n# - Active 3D view section box state\r\n\r\nimport clr\r\nimport json\r\nimport os\r\n\r\nclr.AddReference(\"RevitServices\")\r\nfrom RevitServices.Persistence import DocumentManager\r\nfrom RevitServices.Transactions import TransactionManager\r\n\r\nclr.AddReference(\"RevitAPI\")\r\nfrom Autodesk.Revit.DB import (\r\n    XYZ,\r\n    View3D,\r\n    ViewOrientation3D,\r\n    BoundingBoxXYZ,\r\n    Transform\r\n)\r\n\r\ndoc = DocumentManager.Instance.CurrentDBDocument\r\nuiapp = DocumentManager.Instance.CurrentUIApplication\r\nuidoc = uiapp.ActiveUIDocument\r\n\r\nfile_path = IN[0]\r\n\r\nTURN_OFF_REVIT_SECTION_WHEN_ACC_HAS_NO_SECTION = True\r\nMIN_SECTION_SIZE = 0.10\r\n\r\n# If APS orthographicHeight is too large/small compared with Revit UI,\r\n# adjust this slightly, e.g. 0.8 or 1.2.\r\nZOOM_SCALE = 1.0\r\n\r\n\r\ndef safe_get(data, key, default=None):\r\n    if isinstance(data, dict):\r\n        value = data.get(key, default)\r\n        if value is None:\r\n            return default\r\n        return value\r\n    return default\r\n\r\n\r\ndef get_nested(data, keys):\r\n    current = data\r\n\r\n    for key in keys:\r\n        if current is None:\r\n            return None\r\n\r\n        if isinstance(current, dict):\r\n            current = current.get(key)\r\n        else:\r\n            return None\r\n\r\n    return current\r\n\r\n\r\ndef read_json(path):\r\n    if not path:\r\n        raise Exception(\"IN[0] is empty. Please provide the full JSON filepath.\")\r\n\r\n    path = str(path)\r\n\r\n    if not os.path.exists(path):\r\n        raise Exception(\"JSON file not found: {}\".format(path))\r\n\r\n    with open(path, \"r\") as f:\r\n        return json.load(f)\r\n\r\n\r\ndef to_xyz(value):\r\n    if value is None:\r\n        return None\r\n\r\n    if isinstance(value, list) and len(value) >= 3:\r\n        return XYZ(float(value[0]), float(value[1]), float(value[2]))\r\n\r\n    if isinstance(value, dict):\r\n        x = value.get(\"x\", value.get(\"X\", None))\r\n        y = value.get(\"y\", value.get(\"Y\", None))\r\n        z = value.get(\"z\", value.get(\"Z\", None))\r\n\r\n        if x is not None and y is not None and z is not None:\r\n            return XYZ(float(x), float(y), float(z))\r\n\r\n    return None\r\n\r\n\r\ndef xyz_to_list(point):\r\n    if point is None:\r\n        return None\r\n\r\n    return [point.X, point.Y, point.Z]\r\n\r\n\r\ndef add_xyz(a, b):\r\n    return XYZ(a.X + b.X, a.Y + b.Y, a.Z + b.Z)\r\n\r\n\r\ndef subtract_xyz(a, b):\r\n    return XYZ(a.X - b.X, a.Y - b.Y, a.Z - b.Z)\r\n\r\n\r\ndef multiply_xyz(vector, scalar):\r\n    return XYZ(vector.X * scalar, vector.Y * scalar, vector.Z * scalar)\r\n\r\n\r\ndef safe_normalize(vector, fallback):\r\n    if vector is None:\r\n        return fallback\r\n\r\n    length = vector.GetLength()\r\n\r\n    if length < 0.000001:\r\n        return fallback\r\n\r\n    return vector.Normalize()\r\n\r\n\r\ndef get_any_perpendicular_vector(forward):\r\n    z_axis = XYZ(0, 0, 1)\r\n    y_axis = XYZ(0, 1, 0)\r\n    x_axis = XYZ(1, 0, 0)\r\n\r\n    if abs(forward.DotProduct(z_axis)) < 0.90:\r\n        candidate = z_axis\r\n    elif abs(forward.DotProduct(y_axis)) < 0.90:\r\n        candidate = y_axis\r\n    else:\r\n        candidate = x_axis\r\n\r\n    projection_length = candidate.DotProduct(forward)\r\n    projection = multiply_xyz(forward, projection_length)\r\n    perpendicular = subtract_xyz(candidate, projection)\r\n\r\n    return safe_normalize(perpendicular, XYZ(0, 0, 1))\r\n\r\n\r\ndef make_up_perpendicular_to_forward(up, forward):\r\n    forward = safe_normalize(forward, XYZ(0, 0, -1))\r\n\r\n    if up is None:\r\n        return get_any_perpendicular_vector(forward)\r\n\r\n    up = safe_normalize(up, XYZ(0, 0, 1))\r\n\r\n    dot = up.DotProduct(forward)\r\n    projection = multiply_xyz(forward, dot)\r\n    up_perp = subtract_xyz(up, projection)\r\n\r\n    if up_perp.GetLength() < 0.000001:\r\n        up_perp = get_any_perpendicular_vector(forward)\r\n\r\n    up_perp = safe_normalize(up_perp, get_any_perpendicular_vector(forward))\r\n\r\n    final_dot = abs(up_perp.DotProduct(forward))\r\n\r\n    if final_dot > 0.0001:\r\n        up_perp = get_any_perpendicular_vector(forward)\r\n\r\n    return up_perp\r\n\r\n\r\ndef get_active_3d_view():\r\n    active_view = doc.ActiveView\r\n\r\n    if not isinstance(active_view, View3D):\r\n        return None, \"Active view is not a 3D view. Current active view: {}\".format(active_view.Name)\r\n\r\n    if active_view.IsTemplate:\r\n        return None, \"Active view is a 3D view template, not an editable 3D view: {}\".format(active_view.Name)\r\n\r\n    return active_view, None\r\n\r\n\r\ndef unlock_3d_view_if_needed(view3d):\r\n    try:\r\n        if hasattr(view3d, \"IsLocked\") and view3d.IsLocked:\r\n            view3d.Unlock()\r\n            return True\r\n    except:\r\n        pass\r\n\r\n    return False\r\n\r\n\r\ndef get_global_offset(payload):\r\n    offset = get_nested(payload, [\"model\", \"globalOffset\"])\r\n    xyz = to_xyz(offset)\r\n\r\n    if xyz:\r\n        return xyz\r\n\r\n    return XYZ(0, 0, 0)\r\n\r\n\r\ndef get_revit_viewport_camera(payload):\r\n    schema_version = safe_get(payload, \"schemaVersion\", None)\r\n    revit_viewport = safe_get(payload, \"revitViewport\", None)\r\n\r\n    if schema_version != \"2.0\":\r\n        raise Exception(\"Wrong or old switchback JSON. Expected schemaVersion 2.0, got: {}.\".format(schema_version))\r\n\r\n    if not isinstance(revit_viewport, dict):\r\n        raise Exception(\"This JSON does not contain revitViewport.\")\r\n\r\n    eye = to_xyz(safe_get(revit_viewport, \"eye\"))\r\n    target = to_xyz(safe_get(revit_viewport, \"target\"))\r\n    up = to_xyz(safe_get(revit_viewport, \"up\"))\r\n\r\n    if eye is None or target is None:\r\n        raise Exception(\"revitViewport does not contain valid eye and target values.\")\r\n\r\n    return {\r\n        \"source\": \"revitViewport\",\r\n        \"eye\": eye,\r\n        \"target\": target,\r\n        \"up\": up,\r\n        \"projection\": safe_get(revit_viewport, \"projection\"),\r\n        \"isOrthographic\": safe_get(revit_viewport, \"isOrthographic\"),\r\n        \"orthographicHeight\": safe_get(revit_viewport, \"orthographicHeight\"),\r\n        \"distanceToOrbit\": safe_get(revit_viewport, \"distanceToOrbit\"),\r\n        \"aspectRatio\": safe_get(revit_viewport, \"aspectRatio\"),\r\n        \"rawApsEye\": safe_get(revit_viewport, \"rawApsEye\"),\r\n        \"rawApsTarget\": safe_get(revit_viewport, \"rawApsTarget\")\r\n    }\r\n\r\n\r\ndef apply_camera_to_active_view(view3d, camera_data):\r\n    eye = camera_data[\"eye\"]\r\n    target = camera_data[\"target\"]\r\n    up = camera_data[\"up\"]\r\n\r\n    forward = target.Subtract(eye)\r\n    forward = safe_normalize(forward, XYZ(0, 0, -1))\r\n\r\n    up_vector = make_up_perpendicular_to_forward(up, forward)\r\n\r\n    orientation = ViewOrientation3D(eye, up_vector, forward)\r\n\r\n    was_unlocked = unlock_3d_view_if_needed(view3d)\r\n\r\n    view3d.SetOrientation(orientation)\r\n\r\n    return {\r\n        \"sourceUsed\": camera_data[\"source\"],\r\n        \"eye\": xyz_to_list(eye),\r\n        \"target\": xyz_to_list(target),\r\n        \"upOriginal\": xyz_to_list(up),\r\n        \"upCorrected\": xyz_to_list(up_vector),\r\n        \"forward\": xyz_to_list(forward),\r\n        \"dotUpForward\": up_vector.DotProduct(forward),\r\n        \"projectionFromJson\": camera_data.get(\"projection\"),\r\n        \"isOrthographicFromJson\": camera_data.get(\"isOrthographic\"),\r\n        \"orthographicHeightFromJson\": camera_data.get(\"orthographicHeight\"),\r\n        \"distanceToOrbitFromJson\": camera_data.get(\"distanceToOrbit\"),\r\n        \"wasUnlocked\": was_unlocked,\r\n        \"upVectorUsed\": up_vector,\r\n        \"forwardVectorUsed\": forward\r\n    }\r\n\r\n\r\ndef get_active_ui_view(view_id):\r\n    try:\r\n        ui_views = uidoc.GetOpenUIViews()\r\n\r\n        for ui_view in ui_views:\r\n            if ui_view.ViewId.IntegerValue == view_id.IntegerValue:\r\n                return ui_view\r\n    except:\r\n        pass\r\n\r\n    return None\r\n\r\n\r\ndef center_view_on_target(view3d, camera_data, camera_result):\r\n    ui_view = get_active_ui_view(view3d.Id)\r\n\r\n    if ui_view is None:\r\n        return {\r\n            \"applied\": False,\r\n            \"reason\": \"Could not find active UIView for ZoomAndCenterRectangle.\"\r\n        }\r\n\r\n    target = camera_data[\"target\"]\r\n    up_vector = camera_result.get(\"upVectorUsed\")\r\n    forward = camera_result.get(\"forwardVectorUsed\")\r\n\r\n    if target is None or up_vector is None or forward is None:\r\n        return {\r\n            \"applied\": False,\r\n            \"reason\": \"Missing target/up/forward for centering.\"\r\n        }\r\n\r\n    # Right vector on screen. This is perpendicular to view direction and view up.\r\n    right = forward.CrossProduct(up_vector)\r\n    right = safe_normalize(right, XYZ(1, 0, 0))\r\n\r\n    up_vector = safe_normalize(up_vector, XYZ(0, 0, 1))\r\n\r\n    orthographic_height = camera_data.get(\"orthographicHeight\")\r\n    aspect_ratio = camera_data.get(\"aspectRatio\")\r\n\r\n    try:\r\n        orthographic_height = float(orthographic_height)\r\n    except:\r\n        orthographic_height = None\r\n\r\n    try:\r\n        aspect_ratio = float(aspect_ratio)\r\n    except:\r\n        aspect_ratio = None\r\n\r\n    if orthographic_height is None or orthographic_height <= 0:\r\n        distance_to_orbit = camera_data.get(\"distanceToOrbit\")\r\n        try:\r\n            distance_to_orbit = float(distance_to_orbit)\r\n        except:\r\n            distance_to_orbit = 100.0\r\n\r\n        orthographic_height = max(distance_to_orbit, 10.0)\r\n\r\n    if aspect_ratio is None or aspect_ratio <= 0:\r\n        aspect_ratio = 1.3333333333\r\n\r\n    half_height = (orthographic_height * ZOOM_SCALE) / 2.0\r\n    half_width = half_height * aspect_ratio\r\n\r\n    bottom_left = target \\\r\n        .Subtract(multiply_xyz(right, half_width)) \\\r\n        .Subtract(multiply_xyz(up_vector, half_height))\r\n\r\n    top_right = target \\\r\n        .Add(multiply_xyz(right, half_width)) \\\r\n        .Add(multiply_xyz(up_vector, half_height))\r\n\r\n    try:\r\n        ui_view.ZoomAndCenterRectangle(bottom_left, top_right)\r\n\r\n        return {\r\n            \"applied\": True,\r\n            \"method\": \"UIView.ZoomAndCenterRectangle\",\r\n            \"centerTarget\": xyz_to_list(target),\r\n            \"bottomLeft\": xyz_to_list(bottom_left),\r\n            \"topRight\": xyz_to_list(top_right),\r\n            \"orthographicHeight\": orthographic_height,\r\n            \"aspectRatio\": aspect_ratio,\r\n            \"zoomScale\": ZOOM_SCALE\r\n        }\r\n    except Exception as ex:\r\n        return {\r\n            \"applied\": False,\r\n            \"reason\": str(ex),\r\n            \"centerTarget\": xyz_to_list(target)\r\n        }\r\n\r\n\r\ndef make_8_corners(min_point, max_point):\r\n    return [\r\n        XYZ(min_point.X, min_point.Y, min_point.Z),\r\n        XYZ(min_point.X, min_point.Y, max_point.Z),\r\n        XYZ(min_point.X, max_point.Y, min_point.Z),\r\n        XYZ(min_point.X, max_point.Y, max_point.Z),\r\n        XYZ(max_point.X, min_point.Y, min_point.Z),\r\n        XYZ(max_point.X, min_point.Y, max_point.Z),\r\n        XYZ(max_point.X, max_point.Y, min_point.Z),\r\n        XYZ(max_point.X, max_point.Y, max_point.Z)\r\n    ]\r\n\r\n\r\ndef make_axis_aligned_box_from_points(points):\r\n    if not points:\r\n        return None\r\n\r\n    min_x = min(p.X for p in points)\r\n    min_y = min(p.Y for p in points)\r\n    min_z = min(p.Z for p in points)\r\n\r\n    max_x = max(p.X for p in points)\r\n    max_y = max(p.Y for p in points)\r\n    max_z = max(p.Z for p in points)\r\n\r\n    if abs(max_x - min_x) < MIN_SECTION_SIZE:\r\n        max_x = min_x + MIN_SECTION_SIZE\r\n\r\n    if abs(max_y - min_y) < MIN_SECTION_SIZE:\r\n        max_y = min_y + MIN_SECTION_SIZE\r\n\r\n    if abs(max_z - min_z) < MIN_SECTION_SIZE:\r\n        max_z = min_z + MIN_SECTION_SIZE\r\n\r\n    box = BoundingBoxXYZ()\r\n    box.Transform = Transform.Identity\r\n    box.Min = XYZ(min_x, min_y, min_z)\r\n    box.Max = XYZ(max_x, max_y, max_z)\r\n\r\n    return box\r\n\r\n\r\ndef plane_to_values(plane):\r\n    if isinstance(plane, list) and len(plane) >= 4:\r\n        return [float(plane[0]), float(plane[1]), float(plane[2]), float(plane[3])]\r\n\r\n    if isinstance(plane, dict):\r\n        x = plane.get(\"x\", plane.get(\"X\", None))\r\n        y = plane.get(\"y\", plane.get(\"Y\", None))\r\n        z = plane.get(\"z\", plane.get(\"Z\", None))\r\n        w = plane.get(\"w\", plane.get(\"W\", None))\r\n\r\n        if x is not None and y is not None and z is not None and w is not None:\r\n            return [float(x), float(y), float(z), float(w)]\r\n\r\n    return None\r\n\r\n\r\ndef try_axis_aligned_box_from_cutplanes(cutplanes):\r\n    min_x = None\r\n    max_x = None\r\n    min_y = None\r\n    max_y = None\r\n    min_z = None\r\n    max_z = None\r\n\r\n    for plane in cutplanes:\r\n        values = plane_to_values(plane)\r\n\r\n        if not values:\r\n            continue\r\n\r\n        a, b, c, d = values\r\n\r\n        if abs(a - 1.0) < 0.0001 and abs(b) < 0.0001 and abs(c) < 0.0001:\r\n            min_x = -d\r\n\r\n        elif abs(a + 1.0) < 0.0001 and abs(b) < 0.0001 and abs(c) < 0.0001:\r\n            max_x = d\r\n\r\n        elif abs(b - 1.0) < 0.0001 and abs(a) < 0.0001 and abs(c) < 0.0001:\r\n            min_y = -d\r\n\r\n        elif abs(b + 1.0) < 0.0001 and abs(a) < 0.0001 and abs(c) < 0.0001:\r\n            max_y = d\r\n\r\n        elif abs(c - 1.0) < 0.0001 and abs(a) < 0.0001 and abs(b) < 0.0001:\r\n            min_z = -d\r\n\r\n        elif abs(c + 1.0) < 0.0001 and abs(a) < 0.0001 and abs(b) < 0.0001:\r\n            max_z = d\r\n\r\n    if min_x is None or max_x is None or min_y is None or max_y is None or min_z is None or max_z is None:\r\n        return None\r\n\r\n    return {\r\n        \"min\": XYZ(min_x, min_y, min_z),\r\n        \"max\": XYZ(max_x, max_y, max_z)\r\n    }\r\n\r\n\r\ndef get_section_box_data(payload):\r\n    section = safe_get(payload, \"section\", {})\r\n    global_offset = get_global_offset(payload)\r\n\r\n    if not isinstance(section, dict):\r\n        return {\r\n            \"hasSection\": False,\r\n            \"source\": \"none\",\r\n            \"reason\": \"section object missing or invalid\"\r\n        }\r\n\r\n    has_section = bool(safe_get(section, \"hasSection\", False))\r\n\r\n    if not has_section:\r\n        return {\r\n            \"hasSection\": False,\r\n            \"source\": \"section.hasSection=false\",\r\n            \"reason\": \"ACC viewer had no active section/cut data\"\r\n        }\r\n\r\n    section_box = safe_get(section, \"sectionBox\", None)\r\n\r\n    if isinstance(section_box, dict):\r\n        aps_min = to_xyz(safe_get(section_box, \"min\"))\r\n        aps_max = to_xyz(safe_get(section_box, \"max\"))\r\n\r\n        if aps_min is not None and aps_max is not None:\r\n            aps_corners = make_8_corners(aps_min, aps_max)\r\n            revit_corners = [add_xyz(corner, global_offset) for corner in aps_corners]\r\n            revit_box = make_axis_aligned_box_from_points(revit_corners)\r\n\r\n            return {\r\n                \"hasSection\": True,\r\n                \"source\": \"section.sectionBox + model.globalOffset\",\r\n                \"box\": revit_box,\r\n                \"apsMin\": aps_min,\r\n                \"apsMax\": aps_max,\r\n                \"revitMin\": revit_box.Min if revit_box else None,\r\n                \"revitMax\": revit_box.Max if revit_box else None\r\n            }\r\n\r\n    cutplanes = safe_get(section, \"cutPlanes\", [])\r\n\r\n    if isinstance(cutplanes, list) and len(cutplanes) >= 6:\r\n        axis_box = try_axis_aligned_box_from_cutplanes(cutplanes)\r\n\r\n        if axis_box:\r\n            aps_corners = make_8_corners(axis_box[\"min\"], axis_box[\"max\"])\r\n            revit_corners = [add_xyz(corner, global_offset) for corner in aps_corners]\r\n            revit_box = make_axis_aligned_box_from_points(revit_corners)\r\n\r\n            return {\r\n                \"hasSection\": True,\r\n                \"source\": \"section.cutPlanes-axis-aligned + model.globalOffset\",\r\n                \"box\": revit_box,\r\n                \"apsMin\": axis_box[\"min\"],\r\n                \"apsMax\": axis_box[\"max\"],\r\n                \"revitMin\": revit_box.Min if revit_box else None,\r\n                \"revitMax\": revit_box.Max if revit_box else None,\r\n                \"cutPlaneCount\": len(cutplanes)\r\n            }\r\n\r\n        return {\r\n            \"hasSection\": True,\r\n            \"unsupported\": True,\r\n            \"source\": \"section.cutPlanes\",\r\n            \"reason\": \"Cut planes exist, but they are not an axis-aligned box that can safely become Revit BoundingBoxXYZ.\",\r\n            \"cutPlaneCount\": len(cutplanes)\r\n        }\r\n\r\n    return {\r\n        \"hasSection\": True,\r\n        \"unsupported\": True,\r\n        \"source\": \"section.hasSection=true\",\r\n        \"reason\": \"section.hasSection is true, but no sectionBox or usable cutPlanes were found.\"\r\n    }\r\n\r\n\r\ndef apply_section_to_active_view(view3d, section_data):\r\n    if not section_data.get(\"hasSection\", False):\r\n        if TURN_OFF_REVIT_SECTION_WHEN_ACC_HAS_NO_SECTION:\r\n            view3d.IsSectionBoxActive = False\r\n\r\n            return {\r\n                \"applied\": True,\r\n                \"sectionBoxActive\": False,\r\n                \"source\": section_data.get(\"source\"),\r\n                \"message\": \"ACC had no section. Revit section box switched off.\"\r\n            }\r\n\r\n        return {\r\n            \"applied\": False,\r\n            \"sectionBoxActive\": view3d.IsSectionBoxActive,\r\n            \"source\": section_data.get(\"source\"),\r\n            \"message\": \"ACC had no section. Revit section box left unchanged.\"\r\n        }\r\n\r\n    if section_data.get(\"unsupported\", False):\r\n        return {\r\n            \"applied\": False,\r\n            \"sectionBoxActive\": view3d.IsSectionBoxActive,\r\n            \"source\": section_data.get(\"source\"),\r\n            \"reason\": section_data.get(\"reason\"),\r\n            \"cutPlaneCount\": section_data.get(\"cutPlaneCount\")\r\n        }\r\n\r\n    box = section_data.get(\"box\")\r\n\r\n    if box is None:\r\n        return {\r\n            \"applied\": False,\r\n            \"sectionBoxActive\": view3d.IsSectionBoxActive,\r\n            \"reason\": \"Section data existed but no Revit box could be built.\"\r\n        }\r\n\r\n    view3d.IsSectionBoxActive = True\r\n    view3d.SetSectionBox(box)\r\n\r\n    return {\r\n        \"applied\": True,\r\n        \"sectionBoxActive\": True,\r\n        \"source\": section_data.get(\"source\"),\r\n        \"apsMin\": xyz_to_list(section_data.get(\"apsMin\")),\r\n        \"apsMax\": xyz_to_list(section_data.get(\"apsMax\")),\r\n        \"revitBoxMin\": xyz_to_list(box.Min),\r\n        \"revitBoxMax\": xyz_to_list(box.Max)\r\n    }\r\n\r\n\r\ntry:\r\n    payload = read_json(file_path)\r\n\r\n    if not isinstance(payload, dict):\r\n        raise Exception(\"The JSON root is not an object/dictionary.\")\r\n\r\n    active_view, warning = get_active_3d_view()\r\n\r\n    if warning:\r\n        OUT = {\r\n            \"success\": False,\r\n            \"warning\": warning,\r\n            \"message\": \"Switchback was not applied. Please make a 3D view active and run again.\",\r\n            \"jsonFile\": file_path\r\n        }\r\n    else:\r\n        camera_data = get_revit_viewport_camera(payload)\r\n        section_data = get_section_box_data(payload)\r\n\r\n        TransactionManager.Instance.EnsureInTransaction(doc)\r\n\r\n        camera_result = apply_camera_to_active_view(active_view, camera_data)\r\n        section_result = apply_section_to_active_view(active_view, section_data)\r\n\r\n        TransactionManager.Instance.TransactionTaskDone()\r\n\r\n        # Centre the target point on screen after the camera and section box are applied.\r\n        center_result = center_view_on_target(active_view, camera_data, camera_result)\r\n\r\n        try:\r\n            uidoc.RefreshActiveView()\r\n        except:\r\n            pass\r\n\r\n        # Remove non-serialisable XYZ objects from camera_result before OUT.\r\n        if \"upVectorUsed\" in camera_result:\r\n            camera_result.pop(\"upVectorUsed\")\r\n\r\n        if \"forwardVectorUsed\" in camera_result:\r\n            camera_result.pop(\"forwardVectorUsed\")\r\n\r\n        OUT = {\r\n            \"success\": True,\r\n            \"message\": \"Switchback applied. Camera synced, target centred, and Revit section box matches ACC section state.\",\r\n            \"jsonFile\": file_path,\r\n            \"schemaVersion\": safe_get(payload, \"schemaVersion\"),\r\n            \"viewName\": active_view.Name,\r\n            \"activeViewId\": active_view.Id.IntegerValue,\r\n            \"cameraApplied\": camera_result,\r\n            \"centerApplied\": center_result,\r\n            \"sectionApplied\": section_result,\r\n            \"elementsMoved\": False,\r\n            \"graphicsChanged\": False,\r\n            \"visibilityChanged\": False\r\n        }\r\n\r\nexcept Exception as ex:\r\n    try:\r\n        TransactionManager.Instance.ForceCloseTransaction()\r\n    except:\r\n        pass\r\n\r\n    OUT = {\r\n        \"success\": False,\r\n        \"message\": str(ex),\r\n        \"jsonFile\": file_path\r\n    }",
+      "Engine": "CPython3",
+      "VariableInputPorts": true,
+      "Id": "0bd5c33d571142c188fd605a525e4e5b",
+      "NodeType": "PythonScriptNode",
+      "Inputs": [
+        {
+          "Id": "7f5a52124fea4f43a8635c321737477c",
+          "Name": "IN[0]",
+          "Description": "Input #0",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "f294f57268124e2da5a1338ff3361a3b",
+          "Name": "OUT",
+          "Description": "Result of the python script",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Runs an embedded Python script."
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 200.0,
+      "Id": "3a888a90f9714688adf385022f9bd877",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "a08ad42e8560471f9be8ee6563d61d1a",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "c6386accc6304db580ca8177cfe67dfd",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.Filename, CoreNodeModels",
+      "Id": "e34ac329b5544cc298a49a431d184398",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "6356d70e0f624edc8cc657e70f4b9e1a",
+          "Name": "",
+          "Description": "File Path",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Allows you to select a file on the system and returns its file path",
+      "HintPath": "C:\\Users\\ssomasundaram\\Downloads\\aps-extensions-switchback-issue-panel\\aps-extensions-switchback-ui-pins\\switchback-output\\latest-switchback.json",
+      "InputValue": ".\\latest-switchback.json"
+    }
+  ],
+  "Connectors": [
+    {
+      "Start": "f294f57268124e2da5a1338ff3361a3b",
+      "End": "a08ad42e8560471f9be8ee6563d61d1a",
+      "Id": "b3969adcdedf4791b4050f51bb88fc3d",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "6356d70e0f624edc8cc657e70f4b9e1a",
+      "End": "7f5a52124fea4f43a8635c321737477c",
+      "Id": "694de80dd32b422b9414d6ece571c23d",
+      "IsHidden": "False"
+    }
+  ],
+  "Dependencies": [],
+  "NodeLibraryDependencies": [
+    {
+      "Name": "latest-switchback.json",
+      "ReferenceType": "External",
+      "Nodes": [
+        "e34ac329b5544cc298a49a431d184398"
+      ]
+    }
+  ],
+  "EnableLegacyPolyCurveBehavior": null,
+  "Thumbnail": "",
+  "GraphDocumentationURL": null,
+  "ExtensionWorkspaceData": [
+    {
+      "ExtensionGuid": "28992e1d-abb9-417f-8b1b-05e053bee670",
+      "Name": "Properties",
+      "Version": "3.3",
+      "Data": {}
+    },
+    {
+      "ExtensionGuid": "DFBD9CC0-DB40-457A-939E-8C8555555A9D",
+      "Name": "Generative Design",
+      "Version": "8.2",
+      "Data": {}
+    }
+  ],
+  "Author": "",
+  "Linting": {
+    "activeLinter": "None",
+    "activeLinterId": "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+    "warningCount": 0,
+    "errorCount": 0
+  },
+  "Bindings": [],
+  "View": {
+    "Dynamo": {
+      "ScaleFactor": 1.0,
+      "HasRunWithoutCrash": true,
+      "IsVisibleInDynamoLibrary": true,
+      "Version": "3.3.0.6316",
+      "RunType": "Automatic",
+      "RunPeriod": "1000"
+    },
+    "Camera": {
+      "Name": "_Background Preview",
+      "EyeX": -17.0,
+      "EyeY": 24.0,
+      "EyeZ": 50.0,
+      "LookX": 12.0,
+      "LookY": -13.0,
+      "LookZ": -58.0,
+      "UpX": 0.0,
+      "UpY": 1.0,
+      "UpZ": 0.0
+    },
+    "ConnectorPins": [],
+    "NodeViews": [
+      {
+        "Id": "0bd5c33d571142c188fd605a525e4e5b",
+        "Name": "Python Script",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 782.0,
+        "Y": 158.0
+      },
+      {
+        "Id": "3a888a90f9714688adf385022f9bd877",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1134.0,
+        "Y": 238.0
+      },
+      {
+        "Id": "e34ac329b5544cc298a49a431d184398",
+        "Name": "File Path",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -65.78176396529591,
+        "Y": -30.103630038063073
+      }
+    ],
+    "Annotations": [],
+    "X": 21.261424935949663,
+    "Y": 254.05509720792696,
+    "Zoom": 0.789161032924816
+  }
+}

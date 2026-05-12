@@ -12,7 +12,13 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
     this.activeFilters = null;
 
-    this.sectionBoxSize = Number(localStorage.getItem('acc-issue-section-box-size') || 35);
+    this.cropWaitMs = 1200;
+    this.cropSizeRatio = 0.02;
+    this.cropMinSize = 1.0;
+    this.cropMaxSizeRatio = 0.12;
+    this.cropFitPadding = 1.35;
+
+    this.sectionBoxSize = Number(localStorage.getItem('acc-issue-section-box-size') || 0);
     this.autoSectionEnabled = localStorage.getItem('acc-issue-auto-section-enabled') !== 'false';
 
     this.settingsPanel = null;
@@ -324,7 +330,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
         right: 18px;
         bottom: 92px;
         z-index: 90;
-        width: 270px;
+        width: 280px;
         background: #ffffff;
         color: #1f2937;
         border-radius: 10px;
@@ -456,6 +462,8 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   createSettingsPanel() {
     if (this.settingsPanel || !this.viewer?.container) return;
 
+    const currentSizeText = this.sectionBoxSize > 0 ? this.sectionBoxSize : '';
+
     const panel = document.createElement('div');
     panel.className = 'acc-issue-focus-settings-panel';
     panel.innerHTML = `
@@ -465,8 +473,8 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       </div>
 
       <div class="acc-issue-focus-settings-body">
-        <label for="accIssueSectionBoxSizeInput">Section box size around pin</label>
-        <input id="accIssueSectionBoxSizeInput" type="number" min="2" step="1" value="${this.sectionBoxSize}" />
+        <label for="accIssueSectionBoxSizeInput">Section box size</label>
+        <input id="accIssueSectionBoxSizeInput" type="number" min="0" step="0.5" value="${currentSizeText}" placeholder="Auto" />
 
         <div class="acc-issue-focus-settings-row">
           <input id="accIssueAutoSectionCheckbox" type="checkbox" ${this.autoSectionEnabled ? 'checked' : ''} />
@@ -475,11 +483,12 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
         <div class="acc-issue-focus-settings-actions">
           <button id="accIssueApplySectionSettings" class="primary" type="button">Apply</button>
-          <button id="accIssueClearSectionBox" type="button">Clear section</button>
+          <button id="accIssueResetAutoSectionBox" type="button">Auto</button>
+          <button id="accIssueClearSectionBox" type="button">Clear</button>
         </div>
 
         <div class="acc-issue-focus-settings-note">
-          Start with 35. If the cut area is too tight, try 50 or 75. The issue pin remains at the centre of the section box.
+          The section box is centred on the selected issue pin. Leave size empty or use 0 for automatic crop size.
         </div>
       </div>
     `;
@@ -491,6 +500,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     const sizeInput = panel.querySelector('#accIssueSectionBoxSizeInput');
     const autoCheckbox = panel.querySelector('#accIssueAutoSectionCheckbox');
     const applyButton = panel.querySelector('#accIssueApplySectionSettings');
+    const autoButton = panel.querySelector('#accIssueResetAutoSectionBox');
     const clearButton = panel.querySelector('#accIssueClearSectionBox');
 
     closeButton.addEventListener('click', () => {
@@ -498,9 +508,10 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     });
 
     applyButton.addEventListener('click', () => {
-      const nextSize = Number(sizeInput.value);
+      const inputValue = String(sizeInput.value || '').trim();
+      const nextSize = inputValue === '' ? 0 : Number(inputValue);
 
-      if (Number.isFinite(nextSize) && nextSize > 0) {
+      if (Number.isFinite(nextSize) && nextSize >= 0) {
         this.sectionBoxSize = nextSize;
         localStorage.setItem('acc-issue-section-box-size', String(nextSize));
       }
@@ -508,12 +519,27 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       this.autoSectionEnabled = !!autoCheckbox.checked;
       localStorage.setItem('acc-issue-auto-section-enabled', String(this.autoSectionEnabled));
 
-      if (this.selectedPin && this.autoSectionEnabled) {
-        this.applySectionBoxAroundPoint(this.selectedPin.worldPoint, this.sectionBoxSize);
-        this.focusCameraOnPoint(this.selectedPin.worldPoint, this.sectionBoxSize);
+      if (this.selectedPin) {
+        this.focusAndSectionIssue(this.selectedPin);
       }
 
-      this.setStatus(`Issue focus settings updated. Section box size: ${this.sectionBoxSize}.`);
+      this.setStatus(
+        this.sectionBoxSize > 0
+          ? `Issue focus settings updated. Fixed section box size: ${this.sectionBoxSize}.`
+          : 'Issue focus settings updated. Section box size: Auto.'
+      );
+    });
+
+    autoButton.addEventListener('click', () => {
+      this.sectionBoxSize = 0;
+      sizeInput.value = '';
+      localStorage.setItem('acc-issue-section-box-size', '0');
+
+      if (this.selectedPin) {
+        this.focusAndSectionIssue(this.selectedPin);
+      }
+
+      this.setStatus('Issue crop size reset to Auto.');
     });
 
     clearButton.addEventListener('click', () => {
@@ -683,9 +709,6 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
         total: this.issues.length
       }
     }));
-
-    console.log('Loaded ACC issues:', this.issues);
-    console.log('Filtered issue pins:', this.issuePins);
   }
 
   createPin(issue) {
@@ -719,11 +742,11 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     const viewerState = this.getIssueViewerState(pin.issue);
 
     if (viewerState) {
-      this.viewer.restoreState(viewerState, null, true);
+      this.restoreIssueViewportOnly(viewerState);
 
       setTimeout(() => {
         this.focusAndSectionIssue(pin);
-      }, 250);
+      }, this.cropWaitMs);
     } else {
       this.focusAndSectionIssue(pin);
     }
@@ -732,33 +755,234 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     this.setStatus(`Selected issue #${this.getIssueDisplayId(pin.issue)}: ${this.getIssueTitle(pin.issue)}`);
   }
 
-  focusAndSectionIssue(pin) {
-    if (!pin?.worldPoint) return;
+  restoreIssueViewportOnly(viewerState) {
+    const viewport = this.getViewportFromViewerState(viewerState);
 
-    if (this.autoSectionEnabled) {
-      this.applySectionBoxAroundPoint(pin.worldPoint, this.sectionBoxSize);
+    if (!viewport || !this.viewer?.navigation) return false;
+
+    const nav = this.viewer.navigation;
+
+    try {
+      const eye = this.vectorFromAny(viewport.eye || viewport.position || viewport.camera?.position);
+      const target = this.vectorFromAny(viewport.target || viewport.pivotPoint || viewport.center);
+      const up = this.vectorFromAny(viewport.up || viewport.worldUpVector || viewport.camera?.up);
+
+      if (eye && target && typeof nav.setView === 'function') {
+        nav.setView(
+          new THREE.Vector3(eye.x, eye.y, eye.z),
+          new THREE.Vector3(target.x, target.y, target.z)
+        );
+      } else if (target && typeof nav.setTarget === 'function') {
+        nav.setTarget(new THREE.Vector3(target.x, target.y, target.z));
+      }
+
+      if (up && typeof nav.setCameraUpVector === 'function') {
+        nav.setCameraUpVector(new THREE.Vector3(up.x, up.y, up.z));
+      }
+
+      if (viewport.projection) {
+        if (String(viewport.projection).toLowerCase().includes('perspective') && typeof nav.toPerspective === 'function') {
+          nav.toPerspective();
+        }
+
+        if (String(viewport.projection).toLowerCase().includes('orthographic') && typeof nav.toOrthographic === 'function') {
+          nav.toOrthographic();
+        }
+      }
+
+      if (viewport.fieldOfView && typeof nav.setVerticalFov === 'function') {
+        nav.setVerticalFov(Number(viewport.fieldOfView), true);
+      }
+
+      if (this.viewer.impl && typeof this.viewer.impl.invalidate === 'function') {
+        this.viewer.impl.invalidate(true, true, true);
+      }
+
+      this.schedulePinUpdate();
+      return true;
+    } catch (error) {
+      console.warn('[ACC Issue Pins] Could not restore viewport only. Falling back to current view.', error);
+      return false;
     }
-
-    this.focusCameraOnPoint(pin.worldPoint, this.sectionBoxSize);
-    this.schedulePinUpdate();
   }
 
-  applySectionBoxAroundPoint(centerPoint, size) {
-    if (!centerPoint || !this.viewer?.model) return;
+  getViewportFromViewerState(viewerState) {
+    const parsed = this.parseJsonIfString(viewerState);
 
-    const half = Math.max(Number(size) || 35, 1) / 2;
-
-    const min = new THREE.Vector3(
-      centerPoint.x - half,
-      centerPoint.y - half,
-      centerPoint.z - half
+    return (
+      parsed?.viewport ||
+      parsed?.state?.viewport ||
+      parsed?.viewerState?.viewport ||
+      null
     );
+  }
 
-    const max = new THREE.Vector3(
-      centerPoint.x + half,
-      centerPoint.y + half,
-      centerPoint.z + half
+  async focusAndSectionIssue(pin) {
+    if (!pin) return;
+
+    let cropPoint = null;
+    let cropSource = '';
+
+    if (pin.worldPoint) {
+      cropPoint = pin.worldPoint.clone
+        ? pin.worldPoint.clone()
+        : new THREE.Vector3(pin.worldPoint.x, pin.worldPoint.y, pin.worldPoint.z);
+
+      cropSource = 'issue pin world point';
+    }
+
+    if (!cropPoint || !this.isFiniteVector(cropPoint)) {
+      cropPoint = this.getNavigationTargetPoint();
+      cropSource = 'viewer navigation target';
+    }
+
+    if (!cropPoint || !this.isFiniteVector(cropPoint)) {
+      cropPoint = this.getViewerCenterHitPoint();
+      cropSource = 'viewer center hit test';
+    }
+
+    if (!cropPoint || !this.isFiniteVector(cropPoint)) {
+      cropPoint = this.getCurrentSelectionCenter();
+      cropSource = 'current selection center';
+    }
+
+    if (!cropPoint) {
+      this.setStatus('Could not determine issue crop point.');
+      return;
+    }
+
+    if (this.autoSectionEnabled) {
+      await this.applyCropAroundPoint(cropPoint, cropSource);
+    } else {
+      this.focusCameraOnPoint(cropPoint, this.getCropSize());
+    }
+
+    this.schedulePinUpdate();
+
+    setTimeout(() => this.schedulePinUpdate(), 150);
+    setTimeout(() => this.schedulePinUpdate(), 450);
+  }
+
+  async getSectionExtension() {
+    let ext =
+      (this.viewer.getExtension && this.viewer.getExtension('Autodesk.Section')) ||
+      (this.viewer.getExtension && this.viewer.getExtension('Autodesk.Viewing.Section'));
+
+    if (ext) return ext;
+
+    try {
+      ext = await this.viewer.loadExtension('Autodesk.Section');
+      return ext;
+    } catch (errorOne) {
+      try {
+        ext = await this.viewer.loadExtension('Autodesk.Viewing.Section');
+        return ext;
+      } catch (errorTwo) {
+        console.warn('[ACC Issue Pins] Section extension could not be loaded.', errorOne, errorTwo);
+        return null;
+      }
+    }
+  }
+
+  getModelBoundingBox() {
+    const box = this.viewer.model && this.viewer.model.getBoundingBox
+      ? this.viewer.model.getBoundingBox()
+      : null;
+
+    if (!box || (typeof box.isEmpty === 'function' && box.isEmpty())) {
+      return null;
+    }
+
+    return box.clone ? box.clone() : new THREE.Box3(box.min.clone(), box.max.clone());
+  }
+
+  getCropSize() {
+    if (this.sectionBoxSize && Number.isFinite(this.sectionBoxSize) && this.sectionBoxSize > 0) {
+      return this.sectionBoxSize;
+    }
+
+    const modelBox = this.getModelBoundingBox();
+
+    if (!modelBox) return this.cropMinSize;
+
+    const size = new THREE.Vector3();
+    modelBox.getSize(size);
+
+    const diagonal = Math.max(size.length(), 1);
+    const raw = Math.max(this.cropMinSize, diagonal * this.cropSizeRatio);
+    const capped = Math.min(raw, diagonal * this.cropMaxSizeRatio);
+
+    return capped;
+  }
+
+  makeBoxAroundPoint(point) {
+    const cropSize = this.getCropSize();
+    const half = cropSize / 2;
+
+    return new THREE.Box3(
+      new THREE.Vector3(point.x - half, point.y - half, point.z - half),
+      new THREE.Vector3(point.x + half, point.y + half, point.z + half)
     );
+  }
+
+  makeFitBox(cropBox) {
+    const center = new THREE.Vector3();
+    cropBox.getCenter(center);
+
+    const size = new THREE.Vector3();
+    cropBox.getSize(size);
+    size.multiplyScalar(this.cropFitPadding);
+
+    const half = size.clone().multiplyScalar(0.5);
+
+    return new THREE.Box3(
+      center.clone().sub(half),
+      center.clone().add(half)
+    );
+  }
+
+  async applyCropAroundPoint(point, source) {
+    if (!point || !this.viewer?.model) return false;
+
+    const cropBox = this.makeBoxAroundPoint(point);
+    const fitBox = this.makeFitBox(cropBox);
+
+    try {
+      if (this.viewer.navigation && typeof this.viewer.navigation.fitBounds === 'function') {
+        this.viewer.navigation.fitBounds(false, fitBox);
+      }
+    } catch (error) {
+      console.warn('[ACC Issue Pins] fitBounds failed. Continuing to section.', error);
+    }
+
+    const sectionExtension = await this.getSectionExtension();
+
+    if (sectionExtension && typeof sectionExtension.setSectionBox === 'function') {
+      sectionExtension.setSectionBox(cropBox);
+
+      if (this.viewer.impl && typeof this.viewer.impl.invalidate === 'function') {
+        this.viewer.impl.invalidate(true, true, true);
+      }
+
+      this.setStatus(`Issue crop applied from ${source}.`);
+      return true;
+    }
+
+    if (sectionExtension && typeof sectionExtension.activate === 'function') {
+      sectionExtension.activate('box');
+      this.setCutPlanesFromBox(cropBox);
+      this.setStatus('Issue crop applied using fallback cut planes.');
+      return true;
+    }
+
+    this.setCutPlanesFromBox(cropBox);
+    this.setStatus('Issue crop applied using viewer cut planes.');
+    return true;
+  }
+
+  setCutPlanesFromBox(box) {
+    const min = box.min;
+    const max = box.max;
 
     const planes = [
       new THREE.Vector4(1, 0, 0, -min.x),
@@ -770,28 +994,50 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     ];
 
     this.viewer.setCutPlanes(planes);
-    this.viewer.impl.invalidate(true, true, true);
+
+    if (this.viewer.impl && typeof this.viewer.impl.invalidate === 'function') {
+      this.viewer.impl.invalidate(true, true, true);
+    }
   }
 
   clearSectionBox() {
     if (!this.viewer) return;
 
-    this.viewer.setCutPlanes([]);
-    this.viewer.impl.invalidate(true, true, true);
+    const sectionExtension =
+      (this.viewer.getExtension && this.viewer.getExtension('Autodesk.Section')) ||
+      (this.viewer.getExtension && this.viewer.getExtension('Autodesk.Viewing.Section'));
+
+    if (sectionExtension) {
+      if (typeof sectionExtension.clearSection === 'function') {
+        sectionExtension.clearSection();
+      } else if (typeof sectionExtension.deactivate === 'function') {
+        sectionExtension.deactivate();
+      }
+    }
+
+    if (typeof this.viewer.setCutPlanes === 'function') {
+      this.viewer.setCutPlanes([]);
+    }
+
+    if (this.viewer.impl && typeof this.viewer.impl.invalidate === 'function') {
+      this.viewer.impl.invalidate(true, true, true);
+    }
   }
 
   focusCameraOnPoint(centerPoint, size) {
     if (!centerPoint || !this.viewer?.navigation) return;
 
-    const half = Math.max(Number(size) || 35, 1) / 2;
+    const half = Math.max(Number(size) || this.getCropSize(), 1) / 2;
 
     const bounds = new THREE.Box3(
       new THREE.Vector3(centerPoint.x - half, centerPoint.y - half, centerPoint.z - half),
       new THREE.Vector3(centerPoint.x + half, centerPoint.y + half, centerPoint.z + half)
     );
 
+    const fitBox = this.makeFitBox(bounds);
+
     if (typeof this.viewer.navigation.fitBounds === 'function') {
-      this.viewer.navigation.fitBounds(false, bounds);
+      this.viewer.navigation.fitBounds(false, fitBox);
     } else {
       this.viewer.navigation.setTarget(centerPoint);
       this.viewer.fitToView();
@@ -800,6 +1046,90 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     setTimeout(() => {
       this.schedulePinUpdate();
     }, 250);
+  }
+
+  getViewerCenterHitPoint() {
+    try {
+      const container = this.viewer.container || (this.viewer.impl && this.viewer.impl.canvas && this.viewer.impl.canvas.parentElement);
+
+      if (!container || typeof this.viewer.clientToWorld !== 'function') return null;
+
+      const rect = container.getBoundingClientRect();
+      const x = rect.width / 2;
+      const y = rect.height / 2;
+
+      const hit = this.viewer.clientToWorld(x, y, true);
+
+      if (hit && hit.point) {
+        return hit.point.clone ? hit.point.clone() : new THREE.Vector3(hit.point.x, hit.point.y, hit.point.z);
+      }
+    } catch (error) {
+      return null;
+    }
+
+    return null;
+  }
+
+  getNavigationTargetPoint() {
+    try {
+      if (this.viewer.navigation && typeof this.viewer.navigation.getTarget === 'function') {
+        const target = this.viewer.navigation.getTarget();
+
+        if (
+          target &&
+          Number.isFinite(target.x) &&
+          Number.isFinite(target.y) &&
+          Number.isFinite(target.z)
+        ) {
+          return target.clone ? target.clone() : new THREE.Vector3(target.x, target.y, target.z);
+        }
+      }
+    } catch (error) {
+      return null;
+    }
+
+    return null;
+  }
+
+  getCurrentSelectionCenter() {
+    try {
+      const selection = this.viewer.getSelection && this.viewer.getSelection();
+
+      if (!selection || !selection.length) return null;
+
+      const dbId = selection[0];
+      const tree = this.viewer.model && this.viewer.model.getData && this.viewer.model.getData().instanceTree;
+      const fragments = [];
+
+      if (tree && typeof tree.enumNodeFragments === 'function') {
+        tree.enumNodeFragments(dbId, fragmentId => fragments.push(fragmentId), true);
+      }
+
+      if (!fragments.length || !this.viewer.model.getFragmentList) return null;
+
+      const fragmentList = this.viewer.model.getFragmentList();
+      const box = new THREE.Box3();
+
+      fragments.forEach((fragmentId, index) => {
+        const fragmentBox = new THREE.Box3();
+        fragmentList.getWorldBounds(fragmentId, fragmentBox);
+
+        if (index === 0) {
+          box.copy(fragmentBox);
+        } else {
+          box.union(fragmentBox);
+        }
+      });
+
+      if (typeof box.isEmpty === 'function' && box.isEmpty()) return null;
+
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+
+      return center;
+    } catch (error) {
+      return null;
+    }
   }
 
   dispatchIssueSelected(pin) {
@@ -1073,11 +1403,12 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
   getIssueCategory(issue) {
     return (
-      issue?.category ||
       issue?.categoryName ||
+      issue?.category ||
       issue?.issueCategory ||
-      issue?.attributes?.category ||
       issue?.attributes?.categoryName ||
+      issue?.attributes?.category ||
+      issue?.attributes?.issueCategory ||
       issue?.issueType?.category ||
       issue?.issueType?.categoryName ||
       ''
@@ -1086,16 +1417,18 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
   getIssueType(issue) {
     const typeName =
+      issue?.issueTypeName ||
       issue?.issueType?.title ||
       issue?.issueType?.name ||
-      issue?.issueTypeName ||
+      issue?.attributes?.issueTypeName ||
       issue?.attributes?.issueType ||
       issue?.type;
 
     const subtypeName =
+      issue?.issueSubtypeName ||
       issue?.issueSubtype?.title ||
       issue?.issueSubtype?.name ||
-      issue?.issueSubtypeName ||
+      issue?.attributes?.issueSubtypeName ||
       issue?.attributes?.issueSubtype ||
       issue?.subtype;
 
