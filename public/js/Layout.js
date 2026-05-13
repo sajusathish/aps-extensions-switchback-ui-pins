@@ -671,12 +671,11 @@
         margin-top: 8px;
       }
 
-      .issueTablePanel { margin-top: 10px; border: 1px solid #94a3b8; border-radius: 8px; background: #fff; overflow: hidden; box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
+      .issueTablePanel { margin-top: 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; overflow: hidden; }
       .issueTableHeader { padding: 10px 12px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #e5e7eb; }
-      .issueTableWrapper { max-height: 360px; overflow: auto; }
-      .issueTable { width: 100%; border-collapse: collapse; font-size: 13px; }
-      .issueTable thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; }
-      .issueTable th, .issueTable td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+      .issueTableWrapper { max-height: 220px; overflow: auto; }
+      .issueTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .issueTable th, .issueTable td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
       .issueTable tbody tr { cursor: pointer; }
       .issueTable tbody tr:hover { background: #f8fafc; }
       .issueTable tbody tr.active { background: #dbeafe; }
