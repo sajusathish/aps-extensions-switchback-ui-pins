@@ -737,21 +737,26 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   }
 
   selectPin(pin) {
-    this.selectedPin = pin;
-    this.selectedIssueId = this.getIssueId(pin.issue);
+    this.ensureIssueViewableLoaded(pin.issue).finally(() => this.finishPinSelection(pin));
+  }
+
+  finishPinSelection(pin) {
+    const refreshedPin = this.issuePins.find(item => this.getIssueId(item.issue) === this.getIssueId(pin.issue)) || pin;
+    this.selectedPin = refreshedPin;
+    this.selectedIssueId = this.getIssueId(refreshedPin.issue);
 
     this.issuePins.forEach(existing => existing.element.classList.remove('selected'));
-    pin.element.classList.add('selected');
+    refreshedPin.element.classList.add('selected');
 
     const modelData = this.viewer?.model?.getData?.() || {};
     const globalOffset = modelData.globalOffset || null;
 
     window.accIssuePinsSelectedIssue = {
       id: this.selectedIssueId,
-      displayId: this.getIssueDisplayId(pin.issue),
-      title: this.getIssueTitle(pin.issue),
-      status: this.getIssueStatus(pin.issue),
-      worldPoint: pin.worldPoint.toArray(),
+      displayId: this.getIssueDisplayId(refreshedPin.issue),
+      title: this.getIssueTitle(refreshedPin.issue),
+      status: this.getIssueStatus(refreshedPin.issue),
+      worldPoint: refreshedPin.worldPoint.toArray(),
       globalOffset: globalOffset
         ? {
             x: Number(globalOffset.x || 0),
@@ -763,20 +768,59 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       autoSectionEnabled: this.autoSectionEnabled
     };
 
-    const viewerState = this.getIssueViewerState(pin.issue);
+    const viewerState = this.getIssueViewerState(refreshedPin.issue);
 
     if (viewerState) {
       this.restoreIssueViewportOnly(viewerState);
 
       setTimeout(() => {
-        this.focusAndSectionIssue(pin);
+        this.focusAndSectionIssue(refreshedPin);
       }, this.cropWaitMs);
     } else {
-      this.focusAndSectionIssue(pin);
+      this.focusAndSectionIssue(refreshedPin);
     }
 
-    this.dispatchIssueSelected(pin);
-    this.setStatus(`Selected issue #${this.getIssueDisplayId(pin.issue)}: ${this.getIssueTitle(pin.issue)}`);
+    this.dispatchIssueSelected(refreshedPin);
+    this.setStatus(`Selected issue #${this.getIssueDisplayId(refreshedPin.issue)}: ${this.getIssueTitle(refreshedPin.issue)}`);
+  }
+
+  ensureIssueViewableLoaded(issue) {
+    const viewable = this.getIssuePreferredViewable(issue);
+    const doc = window.currentDocument;
+    if (!viewable || !doc?.getRoot || !this.viewer?.model) return Promise.resolve(false);
+
+    const activeKeys = this.getCurrentViewableKeys();
+    const issueKeys = [viewable.id, viewable.viewableId, viewable.guid, viewable.name].map(v => this.normaliseViewableKey(v)).filter(Boolean);
+    if (issueKeys.some(key => activeKeys.has(key))) return Promise.resolve(false);
+
+    const targetNode = this.findViewableNode(doc.getRoot(), issueKeys);
+    if (!targetNode) return Promise.resolve(false);
+
+    return Promise.resolve(this.viewer.loadDocumentNode(doc, targetNode))
+      .then(() => {
+        this.drawPins();
+        return true;
+      })
+      .catch(() => false);
+  }
+
+  getIssuePreferredViewable(issue) {
+    const linked = this.rankLinkedDocumentsForCurrentView(issue?.linkedDocuments || issue?.attributes?.linkedDocuments || []);
+    if (linked[0]?.details?.viewable) return linked[0].details.viewable;
+    const placements = this.rankPlacementsForCurrentView(issue?.placements || issue?.attributes?.placements || []);
+    return placements[0]?.details?.viewable || null;
+  }
+
+  findViewableNode(root, issueKeys) {
+    const queue = [root];
+    while (queue.length) {
+      const node = queue.shift();
+      const data = node?.data || {};
+      const keys = [data.guid, data.viewableID, data.id, data.name].map(v => this.normaliseViewableKey(v)).filter(Boolean);
+      if (keys.some(key => issueKeys.includes(key))) return node;
+      (node?.children || []).forEach(child => queue.push(child));
+    }
+    return null;
   }
 
   restoreIssueViewportOnly(viewerState) {
@@ -1431,7 +1475,9 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       issue?.attributes?.linkedDocuments ||
       [];
 
-    for (const linkedDocument of linkedDocuments) {
+    const preferredLinkedDocuments = this.rankLinkedDocumentsForCurrentView(linkedDocuments);
+
+    for (const linkedDocument of preferredLinkedDocuments) {
       const details = linkedDocument?.details || {};
 
       const position =
@@ -1454,7 +1500,9 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       issue?.attributes?.placements ||
       [];
 
-    for (const placement of placements) {
+    const preferredPlacements = this.rankPlacementsForCurrentView(placements);
+
+    for (const placement of preferredPlacements) {
       const details = placement?.details || {};
 
       const position =
@@ -1492,6 +1540,51 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     }
 
     return null;
+  }
+
+  rankLinkedDocumentsForCurrentView(linkedDocuments) {
+    const ordered = Array.isArray(linkedDocuments) ? [...linkedDocuments] : [];
+    const currentKeys = this.getCurrentViewableKeys();
+
+    return ordered.sort((a, b) => this.scoreViewableMatch(b?.details?.viewable, currentKeys) - this.scoreViewableMatch(a?.details?.viewable, currentKeys));
+  }
+
+  rankPlacementsForCurrentView(placements) {
+    const ordered = Array.isArray(placements) ? [...placements] : [];
+    const currentKeys = this.getCurrentViewableKeys();
+
+    return ordered.sort((a, b) => this.scoreViewableMatch(b?.details?.viewable, currentKeys) - this.scoreViewableMatch(a?.details?.viewable, currentKeys));
+  }
+
+  getCurrentViewableKeys() {
+    const model = this.viewer?.model;
+    const node = model?.getDocumentNode?.();
+    const data = model?.getData?.() || {};
+
+    return new Set([
+      this.normaliseViewableKey(node?.data?.guid),
+      this.normaliseViewableKey(node?.data?.viewableID),
+      this.normaliseViewableKey(node?.data?.name),
+      this.normaliseViewableKey(data?.guid),
+      this.normaliseViewableKey(data?.name)
+    ].filter(Boolean));
+  }
+
+  normaliseViewableKey(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  scoreViewableMatch(viewable, currentKeys) {
+    if (!viewable || !currentKeys || currentKeys.size === 0) return 0;
+
+    const keys = [
+      this.normaliseViewableKey(viewable.id),
+      this.normaliseViewableKey(viewable.viewableId),
+      this.normaliseViewableKey(viewable.guid),
+      this.normaliseViewableKey(viewable.name)
+    ].filter(Boolean);
+
+    return keys.some(key => currentKeys.has(key)) ? 1 : 0;
   }
 
   getIssuePivotPoint(issue) {
