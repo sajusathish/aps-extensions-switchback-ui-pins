@@ -38,6 +38,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     this.onModelChanged = this.handleModelChanged.bind(this);
     this.onResize = this.schedulePinUpdate.bind(this);
     this.onIssueFiltersChanged = this.handleIssueFiltersChanged.bind(this);
+    this.onIssueTableSelect = this.handleIssueTableSelect.bind(this);
   }
 
   load() {
@@ -58,6 +59,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     document.addEventListener('viewerinstance', this.onViewerInstance);
     document.addEventListener('viewerdocumentviewchanged', this.onViewerDocumentViewChanged);
     document.addEventListener('accissuefilterschanged', this.onIssueFiltersChanged);
+    document.addEventListener('accissuetableselect', this.onIssueTableSelect);
 
     window.addEventListener('resize', this.onResize);
 
@@ -111,6 +113,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     document.removeEventListener('viewerinstance', this.onViewerInstance);
     document.removeEventListener('viewerdocumentviewchanged', this.onViewerDocumentViewChanged);
     document.removeEventListener('accissuefilterschanged', this.onIssueFiltersChanged);
+    document.removeEventListener('accissuetableselect', this.onIssueTableSelect);
 
     window.removeEventListener('resize', this.onResize);
 
@@ -232,6 +235,16 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   handleIssueFiltersChanged(event) {
     this.activeFilters = event.detail?.filters || null;
     this.drawPins();
+  }
+
+  handleIssueTableSelect(event) {
+    const issueId = event.detail?.issueId;
+    if (!issueId) return;
+
+    const pin = this.issuePins.find(item => this.getIssueId(item.issue) === issueId);
+    if (!pin) return;
+
+    this.selectPin(pin);
   }
 
   scheduleRedrawPins(reason) {

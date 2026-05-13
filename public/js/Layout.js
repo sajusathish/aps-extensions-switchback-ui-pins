@@ -4,6 +4,7 @@
 
 (function () {
   var currentIssueDetail = null;
+  var loadedIssues = [];
   var currentIssueFilters = {
     category: '',
     type: '',
@@ -669,6 +670,15 @@
         color: #64748b;
         margin-top: 8px;
       }
+
+      .issueTablePanel { margin-top: 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; overflow: hidden; }
+      .issueTableHeader { padding: 10px 12px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #e5e7eb; }
+      .issueTableWrapper { max-height: 220px; overflow: auto; }
+      .issueTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .issueTable th, .issueTable td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+      .issueTable tbody tr { cursor: pointer; }
+      .issueTable tbody tr:hover { background: #f8fafc; }
+      .issueTable tbody tr.active { background: #dbeafe; }
     `;
 
     document.head.appendChild(style);
@@ -754,6 +764,33 @@
     issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
 
     initIssueFilterEvents();
+  }
+
+  function buildIssueTablePanel() {
+    var issueDetailsPanel = document.getElementById('issueDetailsPanel');
+    if (!issueDetailsPanel || document.getElementById('issueTablePanel')) return;
+
+    var panel = document.createElement('section');
+    panel.id = 'issueTablePanel';
+    panel.className = 'issueTablePanel';
+    panel.innerHTML = '<div class="issueTableHeader">Project issues</div><div class="issueTableWrapper"><table class="issueTable"><thead><tr><th>ID</th><th>Title</th><th>Status</th></tr></thead><tbody id="issueTableBody"><tr><td colspan="3">No issues loaded.</td></tr></tbody></table></div>';
+    issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
+  }
+
+  function renderIssueTable(issues, selectedIssueId) {
+    var tbody = document.getElementById('issueTableBody');
+    if (!tbody) return;
+
+    if (!issues || issues.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3">No issues loaded.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = issues.map(function (issue) {
+      var issueId = issue?.id || issue?.issueId || issue?.attributes?.id || '';
+      var rowClass = issueId && issueId === selectedIssueId ? ' class="active"' : '';
+      return '<tr data-issue-id="' + issueId + '"' + rowClass + '><td>' + text(getIssueDisplayId(issue, {}), '-') + '</td><td>' + text(getIssueTitle(issue, {}), '-') + '</td><td>' + text(getIssueStatus(issue, {}), '-') + '</td></tr>';
+    }).join('');
   }
 
   function buildStableIssuePanel() {
@@ -1272,10 +1309,14 @@
 
     document.addEventListener('accissueselected', function (event) {
       showIssueDetails(event.detail || {});
+      var selectedIssueId = event.detail?.issue?.id || event.detail?.issue?.issueId || event.detail?.issue?.attributes?.id || null;
+      renderIssueTable(loadedIssues, selectedIssueId);
     });
 
     document.addEventListener('accissuesloaded', function (event) {
-      updateIssueFilterOptions(event.detail?.issues || []);
+      loadedIssues = event.detail?.issues || [];
+      updateIssueFilterOptions(loadedIssues);
+      renderIssueTable(loadedIssues);
     });
 
     document.addEventListener('accissuefilterresult', function (event) {
@@ -1289,6 +1330,14 @@
     });
 
     document.addEventListener('click', function (event) {
+      var row = event.target?.closest?.('#issueTableBody tr[data-issue-id]');
+      if (row) {
+        var issueId = row.getAttribute('data-issue-id');
+        if (issueId) {
+          document.dispatchEvent(new CustomEvent('accissuetableselect', { detail: { issueId: issueId } }));
+        }
+      }
+
       if (event.target && event.target.id === 'closeIssueDetails') {
         event.preventDefault();
         clearIssueDetails();
@@ -1323,6 +1372,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     buildIssueFilterPanel();
+    buildIssueTablePanel();
     buildStableIssuePanel();
     restoreWidths();
     initResizeGrip('leftResizeGrip', 'left');
