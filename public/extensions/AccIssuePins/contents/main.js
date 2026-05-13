@@ -38,6 +38,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     this.onModelChanged = this.handleModelChanged.bind(this);
     this.onResize = this.schedulePinUpdate.bind(this);
     this.onIssueFiltersChanged = this.handleIssueFiltersChanged.bind(this);
+    this.onIssueTableSelect = this.handleIssueTableSelect.bind(this);
   }
 
   load() {
@@ -58,6 +59,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     document.addEventListener('viewerinstance', this.onViewerInstance);
     document.addEventListener('viewerdocumentviewchanged', this.onViewerDocumentViewChanged);
     document.addEventListener('accissuefilterschanged', this.onIssueFiltersChanged);
+    document.addEventListener('accissuetableselect', this.onIssueTableSelect);
 
     window.addEventListener('resize', this.onResize);
 
@@ -111,6 +113,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     document.removeEventListener('viewerinstance', this.onViewerInstance);
     document.removeEventListener('viewerdocumentviewchanged', this.onViewerDocumentViewChanged);
     document.removeEventListener('accissuefilterschanged', this.onIssueFiltersChanged);
+    document.removeEventListener('accissuetableselect', this.onIssueTableSelect);
 
     window.removeEventListener('resize', this.onResize);
 
@@ -232,6 +235,16 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   handleIssueFiltersChanged(event) {
     this.activeFilters = event.detail?.filters || null;
     this.drawPins();
+  }
+
+  handleIssueTableSelect(event) {
+    const issueId = event.detail?.issueId;
+    if (!issueId) return;
+
+    const pin = this.issuePins.find(item => this.getIssueId(item.issue) === issueId);
+    if (!pin) return;
+
+    this.selectPin(pin);
   }
 
   scheduleRedrawPins(reason) {
@@ -1418,7 +1431,9 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       issue?.attributes?.linkedDocuments ||
       [];
 
-    for (const linkedDocument of linkedDocuments) {
+    const preferredLinkedDocuments = this.rankLinkedDocumentsForCurrentView(linkedDocuments);
+
+    for (const linkedDocument of preferredLinkedDocuments) {
       const details = linkedDocument?.details || {};
 
       const position =
@@ -1441,7 +1456,9 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       issue?.attributes?.placements ||
       [];
 
-    for (const placement of placements) {
+    const preferredPlacements = this.rankPlacementsForCurrentView(placements);
+
+    for (const placement of preferredPlacements) {
       const details = placement?.details || {};
 
       const position =
@@ -1479,6 +1496,51 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     }
 
     return null;
+  }
+
+  rankLinkedDocumentsForCurrentView(linkedDocuments) {
+    const ordered = Array.isArray(linkedDocuments) ? [...linkedDocuments] : [];
+    const currentKeys = this.getCurrentViewableKeys();
+
+    return ordered.sort((a, b) => this.scoreViewableMatch(b?.details?.viewable, currentKeys) - this.scoreViewableMatch(a?.details?.viewable, currentKeys));
+  }
+
+  rankPlacementsForCurrentView(placements) {
+    const ordered = Array.isArray(placements) ? [...placements] : [];
+    const currentKeys = this.getCurrentViewableKeys();
+
+    return ordered.sort((a, b) => this.scoreViewableMatch(b?.details?.viewable, currentKeys) - this.scoreViewableMatch(a?.details?.viewable, currentKeys));
+  }
+
+  getCurrentViewableKeys() {
+    const model = this.viewer?.model;
+    const node = model?.getDocumentNode?.();
+    const data = model?.getData?.() || {};
+
+    return new Set([
+      this.normaliseViewableKey(node?.data?.guid),
+      this.normaliseViewableKey(node?.data?.viewableID),
+      this.normaliseViewableKey(node?.data?.name),
+      this.normaliseViewableKey(data?.guid),
+      this.normaliseViewableKey(data?.name)
+    ].filter(Boolean));
+  }
+
+  normaliseViewableKey(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  scoreViewableMatch(viewable, currentKeys) {
+    if (!viewable || !currentKeys || currentKeys.size === 0) return 0;
+
+    const keys = [
+      this.normaliseViewableKey(viewable.id),
+      this.normaliseViewableKey(viewable.viewableId),
+      this.normaliseViewableKey(viewable.guid),
+      this.normaliseViewableKey(viewable.name)
+    ].filter(Boolean);
+
+    return keys.some(key => currentKeys.has(key)) ? 1 : 0;
   }
 
   getIssuePivotPoint(issue) {
