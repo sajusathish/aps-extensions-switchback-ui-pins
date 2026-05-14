@@ -9,7 +9,6 @@
     category: '',
     type: '',
     statuses: ['draft', 'open', 'pending', 'in review', 'closed'],
-    location: '',
     assignedTo: ''
   };
 
@@ -29,6 +28,7 @@
 
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return true;
     if (/^[0-9a-f]{24}$/i.test(trimmed)) return true;
+    if (/^[0-9]{5,}$/.test(trimmed)) return true;
     if (/^[A-Z0-9]{12,24}$/i.test(trimmed) && !trimmed.includes('@') && !trimmed.includes(' ')) return true;
     if (trimmed.startsWith('urn:')) return true;
     if (trimmed.startsWith('b.')) return true;
@@ -50,6 +50,20 @@
     }
 
     return stringValue;
+  }
+
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, '&#096;');
   }
 
   function setElementText(id, value, fallback) {
@@ -328,6 +342,134 @@
     });
   }
 
+
+  function generateSixDigitOtp() {
+    if (window.crypto && window.crypto.getRandomValues) {
+      var array = new Uint32Array(1);
+      window.crypto.getRandomValues(array);
+      return String(100000 + (array[0] % 900000));
+    }
+
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  function getOrCreateRevitConnectionOtp(forceNew) {
+    var now = Date.now();
+    var maxAgeMs = 12 * 60 * 60 * 1000;
+    var otp = localStorage.getItem('acc-switchback-revit-otp') || '';
+    var createdAt = Number(localStorage.getItem('acc-switchback-revit-otp-created-at') || 0);
+    var expiresAt = Number(localStorage.getItem('acc-switchback-revit-otp-expires-at') || 0);
+
+    if (
+      forceNew ||
+      !/^\d{6}$/.test(otp) ||
+      !createdAt ||
+      !expiresAt ||
+      now >= expiresAt ||
+      now - createdAt > maxAgeMs
+    ) {
+      otp = generateSixDigitOtp();
+      createdAt = now;
+      expiresAt = now + maxAgeMs;
+
+      localStorage.setItem('acc-switchback-revit-otp', otp);
+      localStorage.setItem('acc-switchback-revit-otp-created-at', String(createdAt));
+      localStorage.setItem('acc-switchback-revit-otp-expires-at', String(expiresAt));
+    }
+
+    return {
+      otp: otp,
+      createdAtUtc: new Date(createdAt).toISOString(),
+      expiresAtUtc: new Date(expiresAt).toISOString(),
+      validForMinutes: Math.max(0, Math.round((expiresAt - now) / 60000))
+    };
+  }
+
+  function getSwitchbackOtpPayload() {
+    var otpInfo = getOrCreateRevitConnectionOtp(false);
+
+    return {
+      otp: otpInfo.otp,
+      createdAtUtc: otpInfo.createdAtUtc,
+      expiresAtUtc: otpInfo.expiresAtUtc,
+      source: 'web-viewer',
+      purpose: 'authorise-revit-switchback-instance'
+    };
+  }
+
+  function syncRevitConnectionPanel(forceCreate) {
+    var panel = document.getElementById('revitConnectionPanel');
+    var otpValue = document.getElementById('revitConnectionOtpValue');
+    var meta = document.getElementById('revitConnectionOtpMeta');
+    //var button = document.getElementById('connectRevitInstanceButton');
+
+    if (!panel || !otpValue || !meta) return;
+
+    var otpInfo = getOrCreateRevitConnectionOtp(!!forceCreate);
+
+    panel.classList.add('connected');
+    otpValue.textContent = otpInfo.otp;
+    meta.textContent = 'Use this OTP in Revit.';
+
+   // if (button) {
+      //button.textContent = 'Refresh Revit OTP';
+    //}
+
+    window.accSwitchbackRevitOtp = otpInfo.otp;
+    window.accSwitchbackRevitOtpPayload = getSwitchbackOtpPayload();
+  }
+
+  function initRevitConnectionPanel() {
+    window.getAccSwitchbackRevitOtp = function () {
+      return getOrCreateRevitConnectionOtp(false).otp;
+    };
+
+    window.getAccSwitchbackAuthPayload = function () {
+      return getSwitchbackOtpPayload();
+    };
+
+    var existingOtp = localStorage.getItem('acc-switchback-revit-otp');
+    if (existingOtp && /^\d{6}$/.test(existingOtp)) {
+      syncRevitConnectionPanel(false);
+    }
+
+    var button = document.getElementById('connectRevitInstanceButton');
+    if (button) {
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        syncRevitConnectionPanel(false);
+        setStatus('Revit switchback OTP ready. Enter it in the matching Revit add-in instance.');
+      });
+    }
+
+    var copyButton = document.getElementById('copyRevitOtpButton');
+    if (copyButton) {
+      copyButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        var otp = getOrCreateRevitConnectionOtp(false).otp;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(otp).then(function () {
+            setStatus('Revit OTP copied to clipboard.');
+          }).catch(function () {
+            setStatus('Revit OTP: ' + otp);
+          });
+        } else {
+          setStatus('Revit OTP: ' + otp);
+        }
+      });
+    }
+
+    var newButton = document.getElementById('newRevitOtpButton');
+    if (newButton) {
+      newButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        syncRevitConnectionPanel(true);
+        setStatus('New Revit switchback OTP generated.');
+      });
+    }
+  }
+
   function injectIssuePanelStyles() {
     if (document.getElementById('stableIssuePanelStyles')) return;
 
@@ -440,36 +582,186 @@
         line-height: 1.45;
       }
 
-      .stableIssueActions {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 8px;
-        margin-bottom: 14px;
+
+      .revitConnectionPanel {
+        background: #ffffff;
+        border: 1px solid #d8dee8;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 12px;
+        font-family: Arial, sans-serif;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10);
       }
 
-      .stableIssueActions button {
-        height: 34px;
-        border-radius: 7px;
+      .revitConnectionHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px;
+        background: #f8fafc;
+        border-bottom: 1px solid #e5eaf0;
+      }
+
+      .revitConnectionTitle {
         font-size: 13px;
+        line-height: 1.25;
+        font-weight: 700;
+        color: #111827;
+      }
+
+      .revitConnectionHint {
+        margin-top: 3px;
+        color: #64748b;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .revitConnectionButton {
+        flex: 0 0 auto;
+        min-height: 30px;
+        border: 1px solid #2563eb;
+        border-radius: 7px;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 6px 10px;
         cursor: pointer;
+      }
+
+      .revitConnectionButton:hover {
+        background: #1d4ed8;
+        border-color: #1d4ed8;
+      }
+
+      .revitConnectionOtpRow {
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px 12px;
+      }
+
+      .revitConnectionPanel.connected .revitConnectionOtpRow {
+        display: flex;
+      }
+
+      .revitConnectionOtpValue {
+        font-family: Consolas, Monaco, monospace;
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        color: #0f172a;
+        background: #eef2ff;
+        border: 1px solid #c7d2fe;
+        border-radius: 8px;
+        padding: 8px 12px;
+        min-width: 150px;
+        text-align: center;
+      }
+
+      .revitConnectionOtpMeta {
+        flex: 1;
+        color: #64748b;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .revitConnectionOtpActions {
+        display: flex;
+        gap: 6px;
+      }
+
+      .revitConnectionSmallButton {
         border: 1px solid #cbd5e1;
+        border-radius: 7px;
         background: #ffffff;
         color: #0f172a;
+        font-size: 11px;
+        padding: 6px 8px;
+        cursor: pointer;
       }
 
-      .stableIssueActions button:hover {
+      .revitConnectionSmallButton:hover {
         background: #f8fafc;
         border-color: #94a3b8;
       }
 
-      .stableIssueActions .primary {
-        background: #2563eb;
-        color: #ffffff;
-        border-color: #2563eb;
+      .issueSelectionModePanel {
+        background: #ffffff;
+        border: 1px solid #d8dee8;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 12px;
+        font-family: Arial, sans-serif;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10);
       }
 
-      .stableIssueActions .primary:hover {
-        background: #1d4ed8;
+      .issueSelectionModePanel.active {
+        background: #0f3d91;
+        border-color: #0f3d91;
+        box-shadow: 0 2px 8px rgba(15, 61, 145, 0.22);
+      }
+
+      .issueSelectionModeButton {
+        width: 100%;
+        min-height: 58px;
+        border: 0;
+        background: transparent;
+        color: #0f172a;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .issueSelectionModePanel.active .issueSelectionModeButton {
+        color: #ffffff;
+      }
+
+      .issueSelectionModeText {
+        display: block;
+        min-width: 0;
+      }
+
+      .issueSelectionModeTitle {
+        display: block;
+        font-size: 13px;
+        line-height: 1.25;
+        font-weight: 700;
+      }
+
+      .issueSelectionModeHint {
+        display: block;
+        margin-top: 3px;
+        color: #64748b;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .issueSelectionModePanel.active .issueSelectionModeHint {
+        color: #dbeafe;
+      }
+
+      .issueSelectionModeState {
+        flex: 0 0 auto;
+        min-width: 42px;
+        border-radius: 999px;
+        padding: 4px 8px;
+        background: #e2e8f0;
+        color: #0f172a;
+        font-size: 11px;
+        font-weight: 700;
+        text-align: center;
+      }
+
+      .issueSelectionModePanel.active .issueSelectionModeState {
+        background: #ffffff;
+        color: #0f3d91;
       }
 
       .stableIssueCard {
@@ -671,19 +963,267 @@
         margin-top: 8px;
       }
 
-      .issueTablePanel { margin-top: 10px; border: 1px solid #94a3b8; border-radius: 8px; background: #fff; overflow: hidden; box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
-      .issueTableHeader { padding: 10px 12px; font-size: 14px; font-weight: 700; border-bottom: 1px solid #e5e7eb; background: #e2e8f0; color: #0f172a; }
-      .issueTableWrapper { max-height: 360px; overflow: auto; }
-      .issueTable { width: 100%; border-collapse: collapse; font-size: 13px; }
-      .issueTable thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; }
-      .issueTable th, .issueTable td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
-      .issueTable tbody tr { cursor: pointer; }
-      .issueTable tbody tr:hover { background: #f8fafc; }
-      .issueTable tbody tr:nth-child(even) { background: #fcfdff; }
-      .issueTable tbody tr.active { background: #dbeafe; }
+      .issueTablePanel {
+        margin-top: 12px;
+        border: 1px solid #d8dee8;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+        font-family: Arial, sans-serif;
+      }
+
+      .issueTableHeader {
+        display: flex;
+        align-items: center;
+        min-height: 42px;
+        padding: 0 12px;
+        font-size: 14px;
+        font-weight: 700;
+        border-bottom: 1px solid #e5eaf0;
+        background: #f8fafc;
+        color: #111827;
+      }
+
+      .issueTableWrapper {
+        max-height: 360px;
+        overflow: auto;
+        background: #ffffff;
+      }
+
+      .issueTable {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 12px;
+        color: #111827;
+        background: #ffffff;
+      }
+
+      .issueTable thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #ffffff;
+        color: #475569;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.025em;
+        border-bottom: 1px solid #d8dee8;
+      }
+
+      .issueTable th,
+      .issueTable td {
+        text-align: left;
+        padding: 9px 10px;
+        border-bottom: 1px solid #eef2f7;
+        vertical-align: middle;
+        color: #111827;
+        opacity: 1;
+      }
+
+      .issueTable th:first-child,
+      .issueTable td:first-child {
+        width: 42px;
+        color: #2563eb;
+        font-weight: 700;
+      }
+
+      .issueTable th:nth-child(2),
+      .issueTable td:nth-child(2) {
+        width: auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .issueTable th:nth-child(3),
+      .issueTable td:nth-child(3) {
+        width: 76px;
+        text-transform: lowercase;
+      }
+
+      .issueTable tbody tr {
+        cursor: pointer;
+        background: #ffffff;
+      }
+
+      .issueTable tbody tr:hover {
+        background: #f8fafc;
+      }
+
+      .issueTable tbody tr:nth-child(even) {
+        background: #fcfdff;
+      }
+
+      .issueTable tbody tr:nth-child(even):hover {
+        background: #f8fafc;
+      }
+
+      .issueTable tbody tr.active,
+      .issueTable tbody tr.active td {
+        background: #dbeafe;
+        color: #0f172a;
+        font-weight: 650;
+      }
+
+
+      .right-actions {
+        padding: 10px 12px 12px;
+      }
+
+      .issueTablePanel {
+        margin-top: 12px;
+      }
+
+      .issueTableWrapper {
+        max-height: min(46vh, 520px);
+        overflow: auto;
+        background: #ffffff;
+      }
+
+      .issueTable {
+        min-width: 980px;
+        table-layout: fixed;
+      }
+
+      .issueTable thead th {
+        background: #f8fafc;
+      }
+
+      .issueTable th,
+      .issueTable td {
+        padding: 10px 10px;
+        vertical-align: top;
+      }
+
+      .issueTable th:nth-child(1),
+      .issueTable td:nth-child(1) {
+        width: 52px;
+      }
+
+      .issueTable th:nth-child(2),
+      .issueTable td:nth-child(2) {
+        width: 310px;
+      }
+
+      .issueTable th:nth-child(3),
+      .issueTable td:nth-child(3) {
+        width: 86px;
+        text-transform: lowercase;
+      }
+
+      .issueTable th:nth-child(4),
+      .issueTable td:nth-child(4) {
+        width: 190px;
+      }
+
+      .issueTable th:nth-child(5),
+      .issueTable td:nth-child(5) {
+        width: 128px;
+      }
+
+      .issueTable th:nth-child(6),
+      .issueTable td:nth-child(6) {
+        width: 170px;
+      }
+
+      .issueTable .issueTableTextCell {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .issueTable .issueTableMutedCell {
+        color: #475569;
+      }
+
+      .issueTableStatusPill {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 100%;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: #eef2ff;
+        color: #3730a3;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: lowercase;
+      }
+
+      .issueTableStatusPill.closed {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .issueTableStatusPill.draft {
+        background: #f1f5f9;
+        color: #334155;
+      }
+
+      .issueTableStatusPill.open {
+        background: #fff7ed;
+        color: #9a3412;
+      }
+
     `;
 
     document.head.appendChild(style);
+  }
+
+  function syncIssueSelectionModePanel() {
+    var enabled = getOpenSavedViewOnSelectSetting();
+    var panel = document.getElementById('issueSelectionModePanel');
+    var state = document.getElementById('issueSelectionModeState');
+    var hint = document.getElementById('issueSelectionModeHint');
+
+    if (panel) {
+      panel.classList.toggle('active', enabled);
+    }
+
+    if (state) {
+      state.textContent = enabled ? 'ON' : 'OFF';
+    }
+
+    if (hint) {
+      hint.textContent = enabled
+        ? 'Issue clicks will open the saved ACC issue view.'
+        : 'Issue clicks keep the current viewer context.';
+    }
+  }
+
+  function buildIssueSelectionModePanel() {
+    injectIssuePanelStyles();
+
+    if (document.getElementById('issueSelectionModePanel')) return;
+
+    var issueDetailsPanel = document.getElementById('issueDetailsPanel');
+    if (!issueDetailsPanel || !issueDetailsPanel.parentNode) return;
+
+    var panel = document.createElement('section');
+    panel.id = 'issueSelectionModePanel';
+    panel.className = 'issueSelectionModePanel';
+    panel.innerHTML = `
+      <button id="issueSelectionModeToggle" class="issueSelectionModeButton" type="button">
+        <span class="issueSelectionModeText">
+          <span class="issueSelectionModeTitle">Open saved ACC issue view on issue selection</span>
+          <span id="issueSelectionModeHint" class="issueSelectionModeHint">Issue clicks keep the current viewer context.</span>
+        </span>
+        <span id="issueSelectionModeState" class="issueSelectionModeState">OFF</span>
+      </button>
+    `;
+
+    var filterPanel = document.getElementById('issueFilterPanel');
+
+    if (filterPanel && filterPanel.parentNode === issueDetailsPanel.parentNode) {
+      issueDetailsPanel.parentNode.insertBefore(panel, filterPanel);
+    } else {
+      issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
+    }
+
+    syncIssueSelectionModePanel();
   }
 
   function buildIssueFilterPanel() {
@@ -745,12 +1285,6 @@
           </div>
         </div>
 
-        <div class="issueFilterField">
-          <label for="issueLocationFilter">Location</label>
-          <select id="issueLocationFilter">
-            <option value="">Select...</option>
-          </select>
-        </div>
 
         <div class="issueFilterField">
           <label for="issueAssignedToFilter">Assigned to</label>
@@ -780,7 +1314,7 @@
     var panel = document.createElement('section');
     panel.id = 'issueTablePanel';
     panel.className = 'issueTablePanel';
-    panel.innerHTML = '<div class="issueTableHeader">Project issues</div><div class="issueTableWrapper"><table class="issueTable"><thead><tr><th>ID</th><th>Title</th><th>Status</th></tr></thead><tbody id="issueTableBody"><tr><td colspan="3">No issues loaded.</td></tr></tbody></table></div>';
+    panel.innerHTML = '<div class="issueTableHeader">Project issues</div><div class="issueTableWrapper"><table class="issueTable"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Assigned to</th><th>Due date</th><th>Created by</th></tr></thead><tbody id="issueTableBody"><tr><td colspan="6">No issues loaded.</td></tr></tbody></table></div>';
     issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
   }
 
@@ -789,15 +1323,52 @@
     if (!tbody) return;
 
     if (!issues || issues.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="3">No issues loaded.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6">No issues loaded.</td></tr>';
       return;
     }
 
     tbody.innerHTML = issues.map(function (issue) {
       var issueId = issue?.id || issue?.issueId || issue?.attributes?.id || '';
       var rowClass = issueId && issueId === selectedIssueId ? ' class="active"' : '';
-      return '<tr data-issue-id="' + issueId + '"' + rowClass + '><td>' + text(getIssueDisplayId(issue, {}), '-') + '</td><td>' + text(getIssueTitle(issue, {}), '-') + '</td><td>' + text(getIssueStatus(issue, {}), '-') + '</td></tr>';
+      var status = text(getIssueStatus(issue, {}), '-');
+      var dueDate = formatDate(getDueDate(issue));
+      var createdBy = getOpenedBy(issue);
+      var assignedTo = getAssignedTo(issue, {});
+
+      return '<tr data-issue-id="' + escapeAttribute(issueId) + '"' + rowClass + '>' +
+        '<td>' + escapeHtml(text(getIssueDisplayId(issue, {}), '-')) + '</td>' +
+        '<td><div class="issueTableTextCell" title="' + escapeAttribute(text(getIssueTitle(issue, {}), '-')) + '">' + escapeHtml(text(getIssueTitle(issue, {}), '-')) + '</div></td>' +
+        '<td><span class="issueTableStatusPill ' + escapeAttribute(statusClass(status)) + '">' + escapeHtml(status) + '</span></td>' +
+        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(assignedTo) + '">' + escapeHtml(assignedTo) + '</div></td>' +
+        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(dueDate) + '">' + escapeHtml(dueDate) + '</div></td>' +
+        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(createdBy) + '">' + escapeHtml(createdBy) + '</div></td>' +
+      '</tr>';
     }).join('');
+  }
+
+  function getOpenSavedViewOnSelectSetting() {
+    return localStorage.getItem('acc-issue-open-saved-view-on-select') === 'true';
+  }
+
+  function setOpenSavedViewOnSelectSetting(value) {
+    var enabled = value === true;
+
+    localStorage.setItem('acc-issue-open-saved-view-on-select', String(enabled));
+
+    syncIssueSelectionModePanel();
+
+
+    document.dispatchEvent(new CustomEvent('accissueopensavedviewsettingchanged', {
+      detail: {
+        openSavedViewOnIssueSelect: enabled
+      }
+    }));
+
+    setStatus(
+      enabled
+        ? 'Issue selection mode: open saved ACC issue view.'
+        : 'Issue selection mode: keep current viewer context.'
+    );
   }
 
   function buildStableIssuePanel() {
@@ -826,11 +1397,6 @@
         </div>
 
         <div id="issueDetailsContent" class="stableIssueBody" style="display:none;">
-          <div class="stableIssueActions">
-            <button id="issuePanelSwitchbackButton" class="primary" type="button">Switchback current view to Revit</button>
-            <button id="issuePanelClearSectionButton" type="button">Clear section box</button>
-          </div>
-
           <div class="stableIssueCard">
             <div class="stableIssueCardHeader">Issue</div>
             <div class="stableIssueCardBody">
@@ -996,9 +1562,6 @@
       types: uniqueValues(issues.map(function (issue) {
         return getIssueType(issue, {});
       })),
-      locations: uniqueValues(issues.map(function (issue) {
-        return getLocation(issue);
-      })),
       assignedTo: uniqueValues(issues.map(function (issue) {
         return getAssignedTo(issue, {});
       }))
@@ -1037,7 +1600,6 @@
 
     populateSelect('issueCategoryFilter', data.categories, 'Select a type');
     populateSelect('issueTypeFilter', data.types, 'Select a type');
-    populateSelect('issueLocationFilter', data.locations, 'Select...');
     populateSelect('issueAssignedToFilter', data.assignedTo, 'Select a member, role, or company');
 
     var summary = document.getElementById('issueFilterSummary');
@@ -1051,7 +1613,6 @@
   function readIssueFiltersFromUi() {
     var category = document.getElementById('issueCategoryFilter')?.value || '';
     var type = document.getElementById('issueTypeFilter')?.value || '';
-    var location = document.getElementById('issueLocationFilter')?.value || '';
     var assignedTo = document.getElementById('issueAssignedToFilter')?.value || '';
 
     var statuses = Array.from(document.querySelectorAll('.issueStatusChip.active'))
@@ -1064,7 +1625,6 @@
       category: category,
       type: type,
       statuses: statuses,
-      location: location,
       assignedTo: assignedTo
     };
 
@@ -1084,12 +1644,10 @@
   function resetIssueFilters() {
     var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
-    var location = document.getElementById('issueLocationFilter');
     var assignedTo = document.getElementById('issueAssignedToFilter');
 
     if (category) category.value = '';
     if (type) type.value = '';
-    if (location) location.value = '';
     if (assignedTo) assignedTo.value = '';
 
     document.querySelectorAll('.issueStatusChip').forEach(function (button) {
@@ -1102,12 +1660,10 @@
   function clearAllIssueFilters() {
     var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
-    var location = document.getElementById('issueLocationFilter');
     var assignedTo = document.getElementById('issueAssignedToFilter');
 
     if (category) category.value = '';
     if (type) type.value = '';
-    if (location) location.value = '';
     if (assignedTo) assignedTo.value = '';
 
     document.querySelectorAll('.issueStatusChip').forEach(function (button) {
@@ -1120,14 +1676,13 @@
   function initIssueFilterEvents() {
     var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
-    var location = document.getElementById('issueLocationFilter');
     var assignedTo = document.getElementById('issueAssignedToFilter');
     var resetButton = document.getElementById('issueFilterResetButton');
     var clearButton = document.getElementById('issueFilterClearButton');
     var collapseButton = document.getElementById('issueFilterCollapseButton');
     var filterPanel = document.getElementById('issueFilterPanel');
 
-    [category, type, location, assignedTo].forEach(function (select) {
+    [category, type, assignedTo].forEach(function (select) {
       if (select) {
         select.addEventListener('change', applyIssueFilters);
       }
@@ -1177,13 +1732,13 @@
         var viewportWidth = window.innerWidth;
 
         if (side === 'left') {
-          var leftWidth = clamp(moveEvent.clientX, 220, Math.min(620, viewportWidth * 0.55));
+          var leftWidth = clamp(moveEvent.clientX, 220, Math.min(viewportWidth * 0.85, viewportWidth - 180));
           layout.style.setProperty('--left-width', leftWidth + 'px');
           localStorage.setItem('acc-switchback-left-width', String(leftWidth));
         }
 
         if (side === 'right') {
-          var rightWidth = clamp(viewportWidth - moveEvent.clientX, 300, Math.min(620, viewportWidth * 0.5));
+          var rightWidth = clamp(viewportWidth - moveEvent.clientX, 300, Math.min(viewportWidth * 0.85, viewportWidth - 180));
           layout.style.setProperty('--right-width', rightWidth + 'px');
           localStorage.setItem('acc-switchback-right-width', String(rightWidth));
         }
@@ -1304,7 +1859,20 @@
       });
     }
 
+    var selectionModeToggle = document.getElementById('issueSelectionModeToggle');
+    if (selectionModeToggle) {
+      selectionModeToggle.addEventListener('click', function (event) {
+        event.preventDefault();
+        setOpenSavedViewOnSelectSetting(!getOpenSavedViewOnSelectSetting());
+      });
+    }
+
+    syncIssueSelectionModePanel();
+
     document.addEventListener('viewerinstance', function (event) {
+      syncIssueSelectionModePanel();
+
+
       var modelInfo = event.detail?.modelInfo || {};
       setStatus('Loaded: ' + (modelInfo.name || 'model'));
     });
@@ -1341,7 +1909,7 @@
       if (row) {
         var issueId = row.getAttribute('data-issue-id');
         if (issueId) {
-          document.dispatchEvent(new CustomEvent('accissuetableselect', { detail: { issueId: issueId } }));
+          document.dispatchEvent(new CustomEvent('accissuetableselect', { detail: { issueId: issueId, openSavedView: getOpenSavedViewOnSelectSetting() } }));
         }
       }
 
@@ -1357,6 +1925,31 @@
           window.switchbackToRevitFromViewer();
         } else {
           setStatus('Load a model first. Switchback is not ready yet.');
+        }
+      }
+
+      if (event.target && event.target.id === 'issuePanelOpenSavedViewButton') {
+        event.preventDefault();
+
+        var selectedIssue = currentIssueDetail && currentIssueDetail.issue ? currentIssueDetail.issue : null;
+        var selectedSummary = currentIssueDetail && currentIssueDetail.summary ? currentIssueDetail.summary : {};
+        var selectedIssueId =
+          selectedIssue?.id ||
+          selectedIssue?.issueId ||
+          selectedIssue?.attributes?.id ||
+          selectedSummary?.id ||
+          null;
+
+        if (!selectedIssueId) {
+          setStatus('Select an issue first.');
+        } else if (typeof window.accIssuePinsOpenSavedView === 'function') {
+          window.accIssuePinsOpenSavedView(selectedIssueId, { source: 'issue-panel-open-saved-view' });
+          setStatus('Opening saved ACC issue view...');
+        } else if (typeof window.openIssueInLatestViewable === 'function' && selectedIssue) {
+          window.openIssueInLatestViewable(selectedIssue);
+          setStatus('Opening saved ACC issue view...');
+        } else {
+          setStatus('Saved ACC issue view action is not ready yet.');
         }
       }
 
@@ -1378,14 +1971,18 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    initRevitConnectionPanel();
+    buildStableIssuePanel();
+    buildIssueSelectionModePanel();
     buildIssueFilterPanel();
     buildIssueTablePanel();
-    buildStableIssuePanel();
     restoreWidths();
     initResizeGrip('leftResizeGrip', 'left');
     initResizeGrip('rightResizeGrip', 'right');
     initCollapseButtons();
     initActionButtons();
     clearIssueDetails();
+
+    syncIssueSelectionModePanel();
   });
 })();

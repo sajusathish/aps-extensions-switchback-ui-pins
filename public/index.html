@@ -89,18 +89,23 @@
           </button>
         </div>
         <div class="right-actions">
-          <button id="switchbackPanelButton" class="btn btn-primary btn-block" type="button">
-            Switchback to Revit
-          </button>
-          <button id="viewInViewerButton" class="btn btn-default btn-block" type="button">
-            Viewer in Viewer
-          </button>
-          <div id="viewerActionStatus" class="action-status">
-            Load a model to enable viewer actions.
-          </div>
-          <div id="issuePinStatus" class="action-status muted-status">
-            Issue pins: waiting for model.
-          </div>
+          <section id="revitConnectionPanel" class="revitConnectionPanel">
+            <div class="revitConnectionHeader">
+              <div>
+                <div class="revitConnectionTitle">Connect to my Revit instance</div>
+                <div class="revitConnectionHint">Generate a OTP to Connect to the right Revit instance on this PC.</div>
+              </div>
+              
+            </div>
+            <div class="revitConnectionOtpRow">
+              <div id="revitConnectionOtpValue" class="revitConnectionOtpValue">------</div>
+              <div id="revitConnectionOtpMeta" class="revitConnectionOtpMeta">OTP not generated yet.</div>
+              <div class="revitConnectionOtpActions">
+                <button id="copyRevitOtpButton" class="revitConnectionSmallButton" type="button">Copy</button>
+                <button id="newRevitOtpButton" class="revitConnectionSmallButton" type="button">New</button>
+              </div>
+            </div>
+          </section>
 
           <section id="issueDetailsPanel" class="issue-details-panel empty">
             <div class="issue-details-header">

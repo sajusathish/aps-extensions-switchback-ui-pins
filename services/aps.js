@@ -1,5 +1,6 @@
 /////////////////////////////////////////////////////////////////////
 // APS helper service for 3-legged OAuth and ACC Data Management access
+// Includes a separate 2-legged helper for server-side account/company/role lookups.
 /////////////////////////////////////////////////////////////////////
 
 const {
@@ -17,6 +18,13 @@ const SCOPES = [
     'account:read',
     'offline_access'
 ];
+
+const TWO_LEGGED_SCOPES = [
+    'account:read',
+    'data:read'
+];
+
+let cachedTwoLeggedToken = null;
 
 function toQueryString(params) {
     const query = new URLSearchParams();
@@ -124,6 +132,49 @@ async function refreshTokenIfNeeded(req) {
     return req.session.token;
 }
 
+async function getTwoLeggedToken() {
+    const now = Date.now();
+
+    if (cachedTwoLeggedToken?.access_token && cachedTwoLeggedToken.expires_at - now > 60 * 1000) {
+        return cachedTwoLeggedToken;
+    }
+
+    if (!APS_CLIENT_ID || !APS_CLIENT_SECRET) {
+        throw new Error('APS_CLIENT_ID and APS_CLIENT_SECRET are required for 2-legged lookup requests.');
+    }
+
+    const params = new URLSearchParams();
+    params.append('grant_type', 'client_credentials');
+    params.append('client_id', APS_CLIENT_ID);
+    params.append('client_secret', APS_CLIENT_SECRET);
+    params.append('scope', TWO_LEGGED_SCOPES.join(' '));
+
+    const response = await fetch(`${APS_AUTH_BASE}/token`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: params
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+        const message = body?.developerMessage || body?.error_description || body?.error || `2-legged token request failed: ${response.status}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.details = body;
+        throw error;
+    }
+
+    cachedTwoLeggedToken = {
+        ...body,
+        expires_at: Date.now() + body.expires_in * 1000
+    };
+
+    return cachedTwoLeggedToken;
+}
+
 async function apsFetch(req, url, options = {}) {
     const token = await refreshTokenIfNeeded(req);
 
@@ -140,6 +191,31 @@ async function apsFetch(req, url, options = {}) {
 
     if (!response.ok) {
         const message = body?.developerMessage || body?.error || `APS request failed: ${response.status}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.details = body;
+        throw error;
+    }
+
+    return body;
+}
+
+async function apsFetchTwoLegged(url, options = {}) {
+    const token = await getTwoLeggedToken();
+
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            Authorization: `Bearer ${token.access_token}`,
+            'Content-Type': 'application/json',
+            ...(options.headers || {})
+        }
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+        const message = body?.developerMessage || body?.error || `2-legged APS request failed: ${response.status}`;
         const error = new Error(message);
         error.status = response.status;
         error.details = body;
@@ -204,10 +280,13 @@ function getDisplayName(entity) {
 module.exports = {
     APS_API_BASE,
     SCOPES,
+    TWO_LEGGED_SCOPES,
     getAuthorizationUrl,
     exchangeCodeForToken,
     refreshTokenIfNeeded,
+    getTwoLeggedToken,
     apsFetch,
+    apsFetchTwoLegged,
     fetchAllPages,
     getViewerUrnFromVersion,
     getDisplayName

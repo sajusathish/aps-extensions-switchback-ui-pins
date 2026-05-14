@@ -242,8 +242,62 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
 
       currentModelInfo: window.currentModelInfo || null,
 
-      selectedIssue: window.accIssuePinsSelectedIssue || null
+      selectedIssue: window.accIssuePinsSelectedIssue || null,
+
+      switchbackAuthorisation: this.getSwitchbackAuthorisationPayload()
     };
+  }
+
+  getSwitchbackAuthorisationPayload() {
+    try {
+      if (typeof window.getAccSwitchbackAuthPayload === 'function') {
+        const payload = window.getAccSwitchbackAuthPayload();
+
+        if (payload && payload.otp) {
+          return payload;
+        }
+      }
+
+      const storageKey = 'acc-switchback-revit-otp';
+      const existing = localStorage.getItem(storageKey);
+
+      if (existing) {
+        const parsed = JSON.parse(existing);
+
+        if (parsed && parsed.otp) {
+          return {
+            otp: String(parsed.otp),
+            createdAtUtc: parsed.createdAtUtc || null,
+            expiresAtUtc: parsed.expiresAtUtc || null,
+            source: parsed.source || 'web-viewer',
+            purpose: parsed.purpose || 'authorise-revit-switchback-instance',
+            fallbackSource: 'switchback-extension-local-storage'
+          };
+        }
+      }
+
+      return {
+        otp: null,
+        createdAtUtc: null,
+        expiresAtUtc: null,
+        source: 'web-viewer',
+        purpose: 'authorise-revit-switchback-instance',
+        fallbackSource: 'switchback-extension-no-otp',
+        warning: 'No Revit OTP has been generated. Click Connect to my Revit instance in the right panel before switchback.'
+      };
+    } catch (error) {
+      console.warn('[Revit Switchback] Could not read switchback authorisation OTP:', error);
+
+      return {
+        otp: null,
+        createdAtUtc: null,
+        expiresAtUtc: null,
+        source: 'web-viewer',
+        purpose: 'authorise-revit-switchback-instance',
+        fallbackSource: 'switchback-extension-error',
+        error: error.message
+      };
+    }
   }
 
   getViewerStateSafe() {

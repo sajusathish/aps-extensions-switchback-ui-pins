@@ -10,6 +10,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     this.selectedIssueId = null;
     this.selectedPin = null;
     this.activeFilters = null;
+    this.issueOpenInProgress = false;
 
     this.cropWaitMs = 1200;
     this.cropSizeRatio = 0.02;
@@ -19,6 +20,11 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
     this.sectionBoxSize = Number(localStorage.getItem('acc-issue-section-box-size') || 0);
     this.autoSectionEnabled = localStorage.getItem('acc-issue-auto-section-enabled') !== 'false';
+
+    // Default mode for coordination/federated views:
+    // keep the currently loaded model/viewable and only focus/section the selected issue.
+    // Users can enable this when they explicitly want table/pin selection to jump to ACC's saved issue view.
+    this.openSavedViewOnIssueSelect = localStorage.getItem('acc-issue-open-saved-view-on-select') === 'true';
 
     this.settingsPanel = null;
     this.settingsButton = null;
@@ -78,7 +84,35 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     window.accIssuePinsClearSection = () => this.clearSectionBox();
     window.accIssuePinsRedraw = () => this.scheduleRedrawPins('manual-redraw');
 
-    console.log('AccIssuePins extension loaded.');
+    // Keeps the currently loaded viewer context. This is the default/federated coordination behaviour.
+    window.accIssuePinsSelectIssue = (issueId, options = {}) => this.selectIssueById(issueId, {
+      ...options,
+      openLinkedViewable: false,
+      preserveCurrentView: true,
+      source: options.source || 'external-select'
+    });
+
+    // Explicit action only: opens the issue's saved ACC linked viewable/context.
+    window.accIssuePinsOpenSavedView = (issueId, options = {}) => this.selectIssueById(issueId, {
+      ...options,
+      openLinkedViewable: true,
+      preserveSavedView: true,
+      source: options.source || 'external-open-saved-view'
+    });
+
+    // Backwards compatibility with earlier debug helpers.
+    window.accIssuePinsOpenIssue = window.accIssuePinsOpenSavedView;
+
+    window.accIssuePinsSetOpenSavedViewOnSelect = value => {
+      this.openSavedViewOnIssueSelect = value === true;
+      localStorage.setItem('acc-issue-open-saved-view-on-select', String(this.openSavedViewOnIssueSelect));
+      this.setStatus(this.openSavedViewOnIssueSelect
+        ? 'Issue selection mode: open saved ACC issue view.'
+        : 'Issue selection mode: keep current viewer/federated view.');
+      return this.openSavedViewOnIssueSelect;
+    };
+
+    console.log('AccIssuePins extension loaded. PROJECT_WIDE_KEEP_CURRENT_VIEW active.');
     return true;
   }
 
@@ -130,6 +164,12 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     if (window.accIssuePinsReload) delete window.accIssuePinsReload;
     if (window.accIssuePinsClearSection) delete window.accIssuePinsClearSection;
     if (window.accIssuePinsRedraw) delete window.accIssuePinsRedraw;
+    if (window.accIssuePinsSelectIssue) delete window.accIssuePinsSelectIssue;
+    if (window.accIssuePinsOpenSavedView) delete window.accIssuePinsOpenSavedView;
+    if (window.accIssuePinsOpenIssue) delete window.accIssuePinsOpenIssue;
+    if (window.accIssuePinsSetOpenSavedViewOnSelect) delete window.accIssuePinsSetOpenSavedViewOnSelect;
+    if (window.accIssuePinsSelectIssue) delete window.accIssuePinsSelectIssue;
+    if (window.accIssuePinsOpenIssue) delete window.accIssuePinsOpenIssue;
 
     console.log('AccIssuePins extension unloaded.');
     return true;
@@ -241,10 +281,109 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     const issueId = event.detail?.issueId;
     if (!issueId) return;
 
-    const pin = this.issuePins.find(item => this.getIssueId(item.issue) === issueId);
-    if (!pin) return;
+    const openSavedView = event.detail?.openSavedView === true || this.openSavedViewOnIssueSelect === true;
 
-    this.selectPin(pin);
+    this.selectIssueById(issueId, {
+      openLinkedViewable: openSavedView,
+      preserveSavedView: openSavedView,
+      preserveCurrentView: !openSavedView,
+      source: openSavedView ? 'issue-table-open-saved-view' : 'issue-table-current-view'
+    });
+  }
+
+  async selectIssueById(issueId, options = {}) {
+    const normalisedIssueId = this.normaliseIdForCompare(issueId);
+    if (!normalisedIssueId) return false;
+
+    const issue = this.findIssueById(normalisedIssueId);
+
+    if (!issue) {
+      this.setStatus(`Issue ${issueId} was not found in the loaded issue list.`);
+      return false;
+    }
+
+    this.selectedIssueId = this.getIssueId(issue);
+    this.dispatchIssueSelectedFromIssue(issue, null);
+
+    const shouldOpenLinkedViewable = options.openLinkedViewable === true;
+    const canOpenLinkedViewable = typeof window.openIssueInLatestViewable === 'function';
+
+    if (shouldOpenLinkedViewable && canOpenLinkedViewable && !this.issueOpenInProgress) {
+      this.issueOpenInProgress = true;
+
+      try {
+        this.setStatus(`Opening issue #${this.getIssueDisplayId(issue)} in its saved ACC view...`);
+        await window.openIssueInLatestViewable(issue);
+
+        this.selectedIssueId = this.getIssueId(issue);
+        this.drawPins();
+
+        window.setTimeout(() => {
+          this.selectIssueById(issueId, {
+            openLinkedViewable: false,
+            preserveSavedView: true,
+            preserveCurrentView: false,
+            source: 'post-linked-viewable-load'
+          });
+        }, 450);
+
+        window.setTimeout(() => {
+          this.selectIssueById(issueId, {
+            openLinkedViewable: false,
+            preserveSavedView: true,
+            preserveCurrentView: false,
+            source: 'post-linked-viewable-load-late'
+          });
+        }, 1200);
+
+        return true;
+      } catch (error) {
+        console.warn('[ACC Issue Pins] Could not open linked viewable for issue. Falling back to current view.', error);
+        this.setStatus(`Could not open saved view for issue #${this.getIssueDisplayId(issue)}. Trying current viewer view.`);
+      } finally {
+        this.issueOpenInProgress = false;
+      }
+    }
+
+    const pin = this.findPinByIssueId(normalisedIssueId);
+
+    if (pin) {
+      this.finishPinSelection(pin, options);
+      return true;
+    }
+
+    this.drawPins();
+
+    const redrawnPin = this.findPinByIssueId(normalisedIssueId);
+
+    if (redrawnPin) {
+      this.finishPinSelection(redrawnPin, options);
+      return true;
+    }
+
+    this.dispatchIssueSelectedFromIssue(issue, null);
+    this.setStatus(`Issue #${this.getIssueDisplayId(issue)} selected, but no drawable pushpin was found in the current view.`);
+    return false;
+  }
+
+  findIssueById(issueId) {
+    const wanted = this.normaliseIdForCompare(issueId);
+
+    return (this.issues || []).find(issue => {
+      return this.normaliseIdForCompare(this.getIssueId(issue)) === wanted;
+    }) || null;
+  }
+
+  findPinByIssueId(issueId) {
+    const wanted = this.normaliseIdForCompare(issueId);
+
+    return this.issuePins.find(item => {
+      return this.normaliseIdForCompare(this.getIssueId(item.issue)) === wanted;
+    }) || null;
+  }
+
+  normaliseIdForCompare(value) {
+    return String(value || '').trim().toLowerCase();
   }
 
   scheduleRedrawPins(reason) {
@@ -490,7 +629,12 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
         <div class="acc-issue-focus-settings-row">
           <input id="accIssueAutoSectionCheckbox" type="checkbox" ${this.autoSectionEnabled ? 'checked' : ''} />
-          <span>Apply section box when clicking issue pin</span>
+          <span>Apply section box when selecting an issue</span>
+        </div>
+
+        <div class="acc-issue-focus-settings-row">
+          <input id="accIssueOpenSavedViewCheckbox" type="checkbox" ${this.openSavedViewOnIssueSelect ? 'checked' : ''} />
+          <span>Open saved ACC issue view on selection</span>
         </div>
 
         <div class="acc-issue-focus-settings-actions">
@@ -500,7 +644,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
         </div>
 
         <div class="acc-issue-focus-settings-note">
-          The section box is centred on the selected issue pin. Leave size empty or use 0 for automatic crop size.
+          Default mode keeps the current coordination/federated view. Enable saved ACC issue view only when you want selection to load the issue's original linked viewable.
         </div>
       </div>
     `;
@@ -511,6 +655,7 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     const closeButton = panel.querySelector('.acc-issue-focus-settings-close');
     const sizeInput = panel.querySelector('#accIssueSectionBoxSizeInput');
     const autoCheckbox = panel.querySelector('#accIssueAutoSectionCheckbox');
+    const openSavedViewCheckbox = panel.querySelector('#accIssueOpenSavedViewCheckbox');
     const applyButton = panel.querySelector('#accIssueApplySectionSettings');
     const autoButton = panel.querySelector('#accIssueResetAutoSectionBox');
     const clearButton = panel.querySelector('#accIssueClearSectionBox');
@@ -531,14 +676,21 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       this.autoSectionEnabled = !!autoCheckbox.checked;
       localStorage.setItem('acc-issue-auto-section-enabled', String(this.autoSectionEnabled));
 
+      this.openSavedViewOnIssueSelect = !!openSavedViewCheckbox.checked;
+      localStorage.setItem('acc-issue-open-saved-view-on-select', String(this.openSavedViewOnIssueSelect));
+
       if (this.selectedPin) {
         this.focusAndSectionIssue(this.selectedPin);
       }
 
+      const modeText = this.openSavedViewOnIssueSelect
+        ? 'Selection mode: open saved ACC issue view.'
+        : 'Selection mode: keep current viewer/federated view.';
+
       this.setStatus(
-        this.sectionBoxSize > 0
-          ? `Issue focus settings updated. Fixed section box size: ${this.sectionBoxSize}.`
-          : 'Issue focus settings updated. Section box size: Auto.'
+        (this.sectionBoxSize > 0
+          ? `Issue focus settings updated. Fixed section box size: ${this.sectionBoxSize}. `
+          : 'Issue focus settings updated. Section box size: Auto. ') + modeText
       );
     });
 
@@ -595,7 +747,18 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
       this.setStatus('Issue pins: loading issues...');
 
-      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/issues`);
+      const accountId =
+        this.modelInfo?.hubId ||
+        this.modelInfo?.accountId ||
+        window.currentModelInfo?.hubId ||
+        window.currentModelInfo?.accountId ||
+        '';
+
+      const query = accountId
+        ? `?accountId=${encodeURIComponent(accountId)}`
+        : '';
+
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/issues${query}`);
       const body = await response.json().catch(() => null);
 
       if (!response.ok) {
@@ -737,10 +900,29 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
   }
 
   selectPin(pin) {
-    this.ensureIssueViewableLoaded(pin.issue).finally(() => this.finishPinSelection(pin));
+    if (!pin || !pin.issue) return;
+
+    const issueId = this.getIssueId(pin.issue);
+
+    if (this.openSavedViewOnIssueSelect && issueId) {
+      this.selectIssueById(issueId, {
+        openLinkedViewable: true,
+        preserveSavedView: true,
+        preserveCurrentView: false,
+        source: 'pin-open-saved-view'
+      });
+      return;
+    }
+
+    // Default/federated behaviour: do not switch viewable/model.
+    // Keep the current coordination view and section/focus around the issue coordinate.
+    this.finishPinSelection(pin, {
+      preserveCurrentView: true,
+      source: 'pin-current-view'
+    });
   }
 
-  finishPinSelection(pin) {
+  finishPinSelection(pin, options = {}) {
     const refreshedPin = this.issuePins.find(item => this.getIssueId(item.issue) === this.getIssueId(pin.issue)) || pin;
     this.selectedPin = refreshedPin;
     this.selectedIssueId = this.getIssueId(refreshedPin.issue);
@@ -769,8 +951,24 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
     };
 
     const viewerState = this.getIssueViewerState(refreshedPin.issue);
+    const preserveSavedView = options && options.preserveSavedView === true;
+    const preserveCurrentView = options && options.preserveCurrentView === true;
 
-    if (viewerState) {
+    if (preserveCurrentView) {
+      // Federated/current-view mode: do not restore ACC camera and do not load another viewable.
+      // Simply focus and section around the project coordinate in the currently loaded view.
+      this.focusAndSectionIssue(refreshedPin);
+    } else if (preserveSavedView) {
+      this.schedulePinUpdate();
+
+      setTimeout(() => {
+        this.schedulePinUpdate();
+      }, 250);
+
+      setTimeout(() => {
+        this.focusAndSectionIssue(refreshedPin);
+      }, this.cropWaitMs);
+    } else if (viewerState) {
       this.restoreIssueViewportOnly(viewerState);
 
       setTimeout(() => {
@@ -1267,19 +1465,25 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
 
   dispatchIssueSelected(pin) {
     const issue = pin.issue || {};
+    const worldPoint = pin.worldPoint ? pin.worldPoint.toArray() : null;
+    this.dispatchIssueSelectedFromIssue(issue, worldPoint);
+  }
+
+  dispatchIssueSelectedFromIssue(issue, worldPoint) {
+    const safeIssue = issue || {};
     const detail = {
-      issue,
+      issue: safeIssue,
       summary: {
-        id: this.getIssueId(issue),
-        displayId: this.getIssueDisplayId(issue),
-        title: this.getIssueTitle(issue),
-        status: this.getIssueStatus(issue),
-        type: this.getIssueType(issue),
-        category: this.getIssueCategory(issue),
-        description: this.getIssueDescription(issue),
-        assignedTo: this.getAssignedTo(issue),
-        location: this.getLocation(issue),
-        worldPoint: pin.worldPoint ? pin.worldPoint.toArray() : null,
+        id: this.getIssueId(safeIssue),
+        displayId: this.getIssueDisplayId(safeIssue),
+        title: this.getIssueTitle(safeIssue),
+        status: this.getIssueStatus(safeIssue),
+        type: this.getIssueType(safeIssue),
+        category: this.getIssueCategory(safeIssue),
+        description: this.getIssueDescription(safeIssue),
+        assignedTo: this.getAssignedTo(safeIssue),
+        location: this.getLocation(safeIssue),
+        worldPoint: worldPoint || null,
         sectionBoxSize: this.sectionBoxSize
       }
     };
@@ -1320,78 +1524,38 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       const pivotFallback = this.getIssuePivotPoint(issue);
 
       if (pivotFallback && this.isFiniteVector(pivotFallback)) {
-        return pivotFallback;
+        const pivotPoint = new THREE.Vector3(pivotFallback.x, pivotFallback.y, pivotFallback.z);
+
+        console.log('[ACC Issue Pins] Pin placed using fallback issue pivot point:', {
+          issueId: this.getIssueDisplayId(issue),
+          finalPoint: pivotPoint.toArray()
+        });
+
+        return pivotPoint;
       }
 
       return null;
     }
 
-    const model = this.viewer?.model;
+    const candidates = this.getPointCandidatesForCurrentModel(issue, rawPoint);
+    const best = candidates[0];
 
-    if (!model || typeof model.getBoundingBox !== 'function') {
-      return rawPoint;
-    }
-
-    const bbox = model.getBoundingBox();
-
-    if (!bbox || (typeof bbox.isEmpty === 'function' && bbox.isEmpty())) {
-      return rawPoint;
-    }
-
-    const candidates = this.getPointCandidatesForCurrentModel(issue, rawPoint, bbox);
-
-    const expandedBox = bbox.clone ? bbox.clone() : new THREE.Box3(bbox.min.clone(), bbox.max.clone());
-    const modelSize = new THREE.Vector3();
-    expandedBox.getSize(modelSize);
-
-    const tolerance = Math.max(modelSize.length() * 0.02, 1.0);
-    expandedBox.expandByScalar(tolerance);
-
-    const insideCandidates = candidates
-      .filter(candidate => expandedBox.containsPoint(candidate.point))
-      .sort((a, b) => a.priority - b.priority);
-
-    if (insideCandidates.length > 0) {
-      const best = insideCandidates[0];
-
-      console.log('[ACC Issue Pins] Pin placed using coordinate candidate:', {
-        issueId: this.getIssueDisplayId(issue),
-        method: best.name,
-        rawPoint: rawPoint.toArray(),
-        finalPoint: best.point.toArray(),
-        modelBoxMin: bbox.min.toArray(),
-        modelBoxMax: bbox.max.toArray(),
-        candidateList: candidates.map(candidate => ({
-          name: candidate.name,
-          priority: candidate.priority,
-          point: candidate.point.toArray(),
-          inside: expandedBox.containsPoint(candidate.point)
-        }))
-      });
-
-      return best.point;
-    }
-
-    const clamped = this.clampPointToBox(rawPoint, bbox);
-
-    console.warn('[ACC Issue Pins] No candidate landed inside model box. Using clamped fallback so pin remains visible.', {
+    console.log('[ACC Issue Pins] Pin placed using project coordinate candidate:', {
       issueId: this.getIssueDisplayId(issue),
+      method: best.name,
       rawPoint: rawPoint.toArray(),
-      clampedPoint: clamped.toArray(),
-      modelBoxMin: bbox.min.toArray(),
-      modelBoxMax: bbox.max.toArray(),
+      finalPoint: best.point.toArray(),
       candidateList: candidates.map(candidate => ({
         name: candidate.name,
         priority: candidate.priority,
-        point: candidate.point.toArray(),
-        inside: expandedBox.containsPoint(candidate.point)
+        point: candidate.point.toArray()
       }))
     });
 
-    return clamped;
+    return best.point;
   }
 
-  getPointCandidatesForCurrentModel(issue, rawPoint, bbox) {
+  getPointCandidatesForCurrentModel(issue, rawPoint) {
     const modelData = this.viewer?.model?.getData?.() || {};
     const globalOffset = modelData.globalOffset || { x: 0, y: 0, z: 0 };
 
@@ -1405,19 +1569,27 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
       ? rawPoint.clone()
       : new THREE.Vector3(Number(rawPoint.x), Number(rawPoint.y), Number(rawPoint.z));
 
-    const modelCenter = bbox.getCenter(new THREE.Vector3());
-    const pivot = this.getIssuePivotPoint(issue);
-
-    const candidates = [
-      {
-        name: 'Raw ACC position',
-        point: raw.clone(),
-        priority: 50
-      },
+    // Project-wide issue pin mode:
+    // - Draw the real ACC 3D issue coordinate regardless of the current viewable.
+    // - Prefer raw minus the current APS model globalOffset, which matched the working debug result.
+    // - Do not clamp to the model bounding box.
+    // - Do not move/transpose the pin to the model centre.
+    // - If a pin belongs to another building in the same project coordinates, it should stay there.
+    return [
       {
         name: 'Raw - current model globalOffset',
         point: raw.clone().sub(offset),
-        priority: 60
+        priority: 10
+      },
+      {
+        name: 'Raw ACC position',
+        point: raw.clone(),
+        priority: 20
+      },
+      {
+        name: 'Raw - Z globalOffset only',
+        point: new THREE.Vector3(raw.x, raw.y, raw.z - offset.z),
+        priority: 30
       },
       {
         name: 'Raw + current model globalOffset',
@@ -1425,40 +1597,11 @@ class AccIssuePinsExtension extends Autodesk.Viewing.Extension {
         priority: 90
       },
       {
-        name: 'Raw - Z globalOffset only',
-        point: new THREE.Vector3(raw.x, raw.y, raw.z - offset.z),
-        priority: 80
-      },
-      {
         name: 'Raw + Z globalOffset only',
         point: new THREE.Vector3(raw.x, raw.y, raw.z + offset.z),
         priority: 100
       }
     ];
-
-    if (pivot && this.isFiniteVector(pivot)) {
-      const deltaFromIssuePivot = raw.clone().sub(pivot);
-
-      candidates.unshift({
-        name: 'XYZ transposed using issue pivot and model centre',
-        point: modelCenter.clone().add(deltaFromIssuePivot),
-        priority: 1
-      });
-
-      candidates.push({
-        name: 'Z transposed using issue pivot and model centre',
-        point: new THREE.Vector3(raw.x, raw.y, modelCenter.z + deltaFromIssuePivot.z),
-        priority: 20
-      });
-
-      candidates.push({
-        name: 'Pivot transposed to model centre',
-        point: modelCenter.clone(),
-        priority: 30
-      });
-    }
-
-    return candidates;
   }
 
   clampPointToBox(point, box) {

@@ -1309,10 +1309,22 @@
     }
   ],
   "count": 5,
+  "accountId": "d5201569-a23d-4fb5-917c-0a85dbda7695",
+  "projectId": "18282654-9bcb-469a-b0d6-cab7a320c8aa",
   "lookupCounts": {
     "identities": 91,
+    "companies": 2,
+    "roles": 166,
     "issueTypes": 10,
     "categories": 0,
-    "rootCauses": 0
+    "rootCauses": 0,
+    "accountId": "d5201569-a23d-4fb5-917c-0a85dbda7695",
+    "projectId": "18282654-9bcb-469a-b0d6-cab7a320c8aa",
+    "projectUsers": 30,
+    "hqProjectCompanies": 1,
+    "hqIndustryRoles": 83,
+    "issueHarvestedAssigneeObjects": 0,
+    "twoLeggedCompaniesAttempted": true,
+    "twoLeggedRolesAttempted": true
   }
 }
