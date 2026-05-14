@@ -109,16 +109,8 @@
     }
   ],
   "Dependencies": [],
-  "NodeLibraryDependencies": [
-    {
-      "Name": "latest-switchback.json",
-      "ReferenceType": "External",
-      "Nodes": [
-        "e34ac329b5544cc298a49a431d184398"
-      ]
-    }
-  ],
-  "EnableLegacyPolyCurveBehavior": null,
+  "NodeLibraryDependencies": [],
+  "EnableLegacyPolyCurveBehavior": true,
   "Thumbnail": "",
   "GraphDocumentationURL": null,
   "ExtensionWorkspaceData": [
@@ -198,8 +190,8 @@
       }
     ],
     "Annotations": [],
-    "X": 21.261424935949663,
-    "Y": 254.05509720792696,
+    "X": 220.26142493594966,
+    "Y": 257.05509720792696,
     "Zoom": 0.789161032924816
   }
 }

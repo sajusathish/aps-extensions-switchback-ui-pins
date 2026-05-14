@@ -2,7 +2,7 @@
   "type": "ACC_VIEW_SWITCHBACK_TO_REVIT",
   "source": "aps-extensions-boilerplate",
   "schemaVersion": "2.0",
-  "sentAtUtc": "2026-05-12T10:57:18.533Z",
+  "sentAtUtc": "2026-05-14T12:42:42.664Z",
   "notes": {
     "purpose": "Viewer-state switchback. Not tied to ACC issues.",
     "dynamoCoordinateRule": "Use revitCamera if available. Otherwise use viewerState.viewport/camera and add model.globalOffset to eye and target.",
@@ -11,66 +11,76 @@
     "sectionRule": "Only apply Revit section box if section.hasSection is true. If false, do not touch Revit elements."
   },
   "model": {
-    "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj0z",
-    "guid": "4d6d0585-81a3-a6b5-9129-3c75de15d908",
-    "name": "MC_A_FEDM_AC09_R25.rvt - V3",
+    "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj00",
+    "guid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+    "name": "MC_A_FEDM_AC09_R25.rvt",
     "source": {
-      "name": "MC_A_FEDM_AC09_R25.rvt - V3",
-      "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj0z",
+      "name": "MC_A_FEDM_AC09_R25.rvt",
+      "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc/dmVyc2lvbj00",
       "hubId": "b.d5201569-a23d-4fb5-917c-0a85dbda7695",
       "projectId": "b.9e6cd253-f9ec-4f07-afbc-6bde2a2fb9be",
       "itemId": "urn:adsk.wipprod:dm.lineage:i4s5-6OpRRq1B7os2XlBfg",
-      "versionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=3",
-      "treeText": "MC_A_FEDM_AC09_R25.rvt - V3",
+      "versionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=4",
+      "treeText": "MC_A_FEDM_AC09_R25.rvt - V4",
       "webViewUrl": null,
       "activeView": {
-        "guid": "4d6d0585-81a3-a6b5-9129-3c75de15d908",
-        "name": "_STRL_FLRS",
+        "guid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+        "viewableId": "de4df382-c879-4cec-93a1-34bfd11eb2a2-015ea0fb",
+        "name": "_ARCH_CLG",
         "role": "3d",
         "type": "geometry"
+      },
+      "issueOpenedFromLinkedDocument": {
+        "issueId": "986b5639-e0c2-4db3-b308-463f658c85f1",
+        "displayId": 22,
+        "lineageUrn": "urn:adsk.wipprod:dm.lineage:i4s5-6OpRRq1B7os2XlBfg",
+        "latestVersionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=4",
+        "viewableGuid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+        "viewableName": "_ARCH_CLG"
       }
     },
     "activeView": {
-      "guid": "4d6d0585-81a3-a6b5-9129-3c75de15d908",
-      "name": "_STRL_FLRS",
+      "guid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+      "viewableId": "de4df382-c879-4cec-93a1-34bfd11eb2a2-015ea0fb",
+      "name": "_ARCH_CLG",
       "role": "3d",
       "type": "geometry"
     },
     "globalOffset": {
-      "x": 583.1551513671875,
-      "y": -373.4256095886233,
-      "z": 136.83251953125
+      "x": 595.0583078256536,
+      "y": -329.49268317738097,
+      "z": 141.59336853027344
     },
     "boundingBox": {
       "min": [
-        -85.83331298828125,
-        -272.3437385559082,
-        -49.83251953125
+        -97.73361206054682,
+        -250.90166496715028,
+        -42.09413146972656
       ],
       "max": [
-        85.83331298828125,
-        272.3437385559082,
-        49.83251953125
+        97.73361206054688,
+        250.90166496715034,
+        42.09413146972656
       ],
       "center": [
-        0,
-        0,
+        2.842170943040401e-14,
+        2.842170943040401e-14,
         0
       ],
       "size": [
-        171.6666259765625,
-        544.6874771118164,
-        99.6650390625
+        195.4672241210937,
+        501.8033299343006,
+        84.18826293945312
       ]
     },
     "data": {
-      "modelId": 1,
+      "modelId": 6,
       "is2d": false
     }
   },
   "viewerState": {
     "version": "2.0",
-    "seedURN": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj0z",
+    "seedURN": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj00",
     "objectSet": [
       {
         "id": [],
@@ -85,37 +95,37 @@
       }
     ],
     "viewport": {
-      "aspectRatio": 1.301482701812191,
-      "isOrthographic": true,
+      "aspectRatio": 1.029654036243822,
+      "isOrthographic": false,
       "name": "",
       "eye": [
-        433.19272666754415,
-        291.54846924640697,
-        234.69050919344448
+        67.49047240724555,
+        -228.20458529219977,
+        12.577774102431743
       ],
       "target": [
-        -31.332665419110704,
-        28.331905704676142,
-        35.65977886443248
+        63.482907717796294,
+        -214.37962643771613,
+        1.4776653139601308
       ],
       "up": [
-        -0.30389845083897327,
-        -0.17219964130737606,
-        0.9370128148063307
+        -0.19721637671963668,
+        0.578383213733304,
+        0.7915671537053022
       ],
-      "distanceToOrbit": 569.8070119183144,
-      "projection": "orthographic",
+      "distanceToOrbit": 25.4967720583993,
+      "projection": "perspective",
       "worldUpVector": [
         0,
         0,
         1
       ],
       "pivotPoint": [
-        0,
-        0,
-        0
+        62.20295447464105,
+        -208.88666367491567,
+        -3.2053763108261255
       ],
-      "orthographicHeight": 569.8070119183146
+      "fieldOfView": 53.13010235415598
     },
     "autocam": {
       "sceneUpDirection": {
@@ -156,61 +166,98 @@
         "displayPoints": true
       }
     },
-    "cutplanes": []
+    "cutplanes": [
+      [
+        1,
+        0,
+        2.220446049250313e-16,
+        -67.65365600585938
+      ],
+      [
+        0,
+        1,
+        2.220446049250313e-16,
+        203.4359588623047
+      ],
+      [
+        0,
+        0,
+        1,
+        -2.2453272342681885
+      ],
+      [
+        -1,
+        0,
+        2.220446049250313e-16,
+        56.75225067138672
+      ],
+      [
+        0,
+        -1,
+        2.220446049250313e-16,
+        -214.33737182617188
+      ],
+      [
+        0,
+        0,
+        -1,
+        -8.656079292297363
+      ]
+    ]
   },
   "viewport": {
-    "aspectRatio": 1.301482701812191,
-    "isOrthographic": true,
+    "aspectRatio": 1.029654036243822,
+    "isOrthographic": false,
     "name": "",
     "eye": [
-      433.19272666754415,
-      291.54846924640697,
-      234.69050919344448
+      67.49047240724555,
+      -228.20458529219977,
+      12.577774102431743
     ],
     "target": [
-      -31.332665419110704,
-      28.331905704676142,
-      35.65977886443248
+      63.482907717796294,
+      -214.37962643771613,
+      1.4776653139601308
     ],
     "up": [
-      -0.30389845083897327,
-      -0.17219964130737606,
-      0.9370128148063307
+      -0.19721637671963668,
+      0.578383213733304,
+      0.7915671537053022
     ],
-    "distanceToOrbit": 569.8070119183144,
-    "projection": "orthographic",
+    "distanceToOrbit": 25.4967720583993,
+    "projection": "perspective",
     "worldUpVector": [
       0,
       0,
       1
     ],
     "pivotPoint": [
-      0,
-      0,
-      0
+      62.20295447464105,
+      -208.88666367491567,
+      -3.2053763108261255
     ],
-    "orthographicHeight": 569.8070119183146
+    "fieldOfView": 53.13010235415598
   },
   "camera": {
     "position": [
-      433.19272666754415,
-      291.54846924640697,
-      234.69050919344448
+      67.49047240724555,
+      -228.20458529219977,
+      12.577774102431743
     ],
     "eye": [
-      433.19272666754415,
-      291.54846924640697,
-      234.69050919344448
+      67.49047240724555,
+      -228.20458529219977,
+      12.577774102431743
     ],
     "target": [
-      -31.332665419110704,
-      28.331905704676142,
-      35.65977886443248
+      63.482907717796294,
+      -214.37962643771613,
+      1.4776653139601308
     ],
     "up": [
-      -0.3038984508389731,
-      -0.172199641307376,
-      0.937012814806331
+      -0.19721637671963663,
+      0.5783832137333039,
+      0.7915671537053024
     ],
     "worldUp": [
       0,
@@ -218,113 +265,99 @@
       1
     ],
     "directionFromTargetToEye": [
-      0.8152328461574766,
-      0.4619398463623409,
-      0.34929498262745895
+      0.22047476786205747,
+      -0.7605752696068546,
+      0.6106685975213006
     ],
-    "distanceToTarget": 569.8070119183146,
+    "distanceToTarget": 18.176976568840892,
     "isPerspective": false,
-    "isOrthographic": true,
-    "projection": "orthographic",
+    "isOrthographic": false,
+    "projection": null,
     "fov": 53.13010235415598,
-    "aspect": 1.301482701812191,
-    "near": 236.94010799238185,
-    "far": 902.6739056794931,
-    "orthographic": {
-      "left": -370.79698469148974,
-      "right": 370.79698469148974,
-      "top": 284.9035059591573,
-      "bottom": -284.9035059591573,
-      "zoom": 1,
-      "orthographicHeight": 569.8070119183146
-    }
+    "aspect": 1.029654036243822,
+    "near": 0.08716000619069206,
+    "far": 631.9275944300227,
+    "orthographic": null
   },
   "revitCamera": {
     "conversion": "APS viewer point + model.globalOffset",
     "eye": [
-      1016.3478780347316,
-      -81.87714034221631,
-      371.5230287246945
+      662.5487802328992,
+      -557.6972684695808,
+      154.17114263270517
     ],
     "position": [
-      1016.3478780347316,
-      -81.87714034221631,
-      371.5230287246945
+      662.5487802328992,
+      -557.6972684695808,
+      154.17114263270517
     ],
     "target": [
-      551.8224859480767,
-      -345.0937038839471,
-      172.4922983956825
+      658.5412155434499,
+      -543.872309615097,
+      143.07103384423357
     ],
     "up": [
-      -0.3038984508389731,
-      -0.172199641307376,
-      0.937012814806331
+      -0.19721637671963663,
+      0.5783832137333039,
+      0.7915671537053024
     ],
-    "projection": "orthographic",
+    "projection": null,
     "isPerspective": false,
-    "isOrthographic": true,
+    "isOrthographic": false,
     "fov": 53.13010235415598,
-    "aspect": 1.301482701812191,
-    "near": 236.94010799238185,
-    "far": 902.6739056794931,
-    "orthographic": {
-      "left": -370.79698469148974,
-      "right": 370.79698469148974,
-      "top": 284.9035059591573,
-      "bottom": -284.9035059591573,
-      "zoom": 1,
-      "orthographicHeight": 569.8070119183146
-    }
+    "aspect": 1.029654036243822,
+    "near": 0.08716000619069206,
+    "far": 631.9275944300227,
+    "orthographic": null
   },
   "revitViewport": {
     "conversion": "APS viewer viewport point + model.globalOffset",
     "eye": [
-      1016.3478780347316,
-      -81.87714034221631,
-      371.5230287246945
+      662.5487802328992,
+      -557.6972684695808,
+      154.17114263270517
     ],
     "target": [
-      551.8224859480767,
-      -345.0937038839471,
-      172.4922983956825
+      658.5412155434499,
+      -543.872309615097,
+      143.07103384423357
     ],
     "up": [
-      -0.30389845083897327,
-      -0.17219964130737606,
-      0.9370128148063307
+      -0.19721637671963668,
+      0.578383213733304,
+      0.7915671537053022
     ],
-    "projection": "orthographic",
-    "isOrthographic": true,
-    "orthographicHeight": 569.8070119183146,
-    "distanceToOrbit": 569.8070119183144,
-    "aspectRatio": 1.301482701812191,
+    "projection": "perspective",
+    "isOrthographic": false,
+    "orthographicHeight": null,
+    "distanceToOrbit": 25.4967720583993,
+    "aspectRatio": 1.029654036243822,
     "rawApsEye": [
-      433.19272666754415,
-      291.54846924640697,
-      234.69050919344448
+      67.49047240724555,
+      -228.20458529219977,
+      12.577774102431743
     ],
     "rawApsTarget": [
-      -31.332665419110704,
-      28.331905704676142,
-      35.65977886443248
+      63.482907717796294,
+      -214.37962643771613,
+      1.4776653139601308
     ]
   },
   "navigation": {
     "position": [
-      433.19272666754415,
-      291.54846924640697,
-      234.69050919344448
+      67.49047240724555,
+      -228.20458529219977,
+      12.577774102431743
     ],
     "target": [
-      -31.332665419110704,
-      28.331905704676142,
-      35.65977886443248
+      63.482907717796294,
+      -214.37962643771613,
+      1.4776653139601308
     ],
     "pivotPoint": [
-      0,
-      0,
-      0
+      62.20295447464105,
+      -208.88666367491567,
+      -3.2053763108261255
     ],
     "worldUp": [
       0,
@@ -333,30 +366,100 @@
     ]
   },
   "section": {
-    "hasSection": false,
+    "hasSection": true,
     "sectionBox": null,
-    "cutPlanes": [],
-    "note": "No section/cut data found. Treat section box as off in Revit."
+    "cutPlanes": [
+      [
+        1,
+        0,
+        2.220446049250313e-16,
+        -67.65365600585938
+      ],
+      [
+        0,
+        1,
+        2.220446049250313e-16,
+        203.4359588623047
+      ],
+      [
+        0,
+        0,
+        1,
+        -2.2453272342681885
+      ],
+      [
+        -1,
+        0,
+        2.220446049250313e-16,
+        56.75225067138672
+      ],
+      [
+        0,
+        -1,
+        2.220446049250313e-16,
+        -214.33737182617188
+      ],
+      [
+        0,
+        0,
+        -1,
+        -8.656079292297363
+      ]
+    ],
+    "note": "Section/cut data captured from viewer."
   },
   "selection": {
     "dbIds": [],
     "count": 0
   },
   "currentModelInfo": {
-    "name": "MC_A_FEDM_AC09_R25.rvt - V3",
-    "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc_dmVyc2lvbj0z",
+    "name": "MC_A_FEDM_AC09_R25.rvt",
+    "urn": "dXJuOmFkc2sud2lwcHJvZDpmcy5maWxlOnZmLmk0czUtNk9wUlJxMUI3b3MyWGxCZmc/dmVyc2lvbj00",
     "hubId": "b.d5201569-a23d-4fb5-917c-0a85dbda7695",
     "projectId": "b.9e6cd253-f9ec-4f07-afbc-6bde2a2fb9be",
     "itemId": "urn:adsk.wipprod:dm.lineage:i4s5-6OpRRq1B7os2XlBfg",
-    "versionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=3",
-    "treeText": "MC_A_FEDM_AC09_R25.rvt - V3",
+    "versionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=4",
+    "treeText": "MC_A_FEDM_AC09_R25.rvt - V4",
     "webViewUrl": null,
     "activeView": {
-      "guid": "4d6d0585-81a3-a6b5-9129-3c75de15d908",
-      "name": "_STRL_FLRS",
+      "guid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+      "viewableId": "de4df382-c879-4cec-93a1-34bfd11eb2a2-015ea0fb",
+      "name": "_ARCH_CLG",
       "role": "3d",
       "type": "geometry"
+    },
+    "issueOpenedFromLinkedDocument": {
+      "issueId": "986b5639-e0c2-4db3-b308-463f658c85f1",
+      "displayId": 22,
+      "lineageUrn": "urn:adsk.wipprod:dm.lineage:i4s5-6OpRRq1B7os2XlBfg",
+      "latestVersionId": "urn:adsk.wipprod:fs.file:vf.i4s5-6OpRRq1B7os2XlBfg?version=4",
+      "viewableGuid": "6d662041-58a9-e4bc-c1aa-e9da93f20e8f",
+      "viewableName": "_ARCH_CLG"
     }
   },
-  "selectedIssue": null
+  "selectedIssue": {
+    "id": "986b5639-e0c2-4db3-b308-463f658c85f1",
+    "displayId": 22,
+    "title": "Dental Chair - change type",
+    "status": "open",
+    "worldPoint": [
+      62.20295447464105,
+      -208.88666367491567,
+      -3.205376310826125
+    ],
+    "globalOffset": {
+      "x": 595.0583078256536,
+      "y": -329.49268317738097,
+      "z": 141.59336853027344
+    },
+    "sectionBoxSize": 0,
+    "autoSectionEnabled": true
+  },
+  "switchbackAuthorisation": {
+    "otp": "650840",
+    "createdAtUtc": "2026-05-14T12:40:02.508Z",
+    "expiresAtUtc": "2026-05-15T00:40:02.508Z",
+    "source": "web-viewer",
+    "purpose": "authorise-revit-switchback-instance"
+  }
 }

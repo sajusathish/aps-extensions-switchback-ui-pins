@@ -16,24 +16,24 @@ body {
 
 #appLayout {
   --left-width: 340px;
-  --right-width: 260px;
+  --right-width: 380px;
   display: grid;
-  grid-template-columns: var(--left-width) 6px minmax(320px, 1fr) 6px var(--right-width);
+  grid-template-columns: var(--left-width) 4px minmax(0, 1fr) 4px var(--right-width);
   width: 100vw;
   height: calc(100vh - 60px);
   overflow: hidden;
 }
 
 #appLayout.left-collapsed {
-  grid-template-columns: 0 0 minmax(320px, 1fr) 6px var(--right-width);
+  grid-template-columns: 0 0 minmax(0, 1fr) 4px var(--right-width);
 }
 
 #appLayout.right-collapsed {
-  grid-template-columns: var(--left-width) 6px minmax(320px, 1fr) 0 0;
+  grid-template-columns: var(--left-width) 4px minmax(0, 1fr) 0 0;
 }
 
 #appLayout.left-collapsed.right-collapsed {
-  grid-template-columns: 0 0 minmax(320px, 1fr) 0 0;
+  grid-template-columns: 0 0 minmax(0, 1fr) 0 0;
 }
 
 .side-panel {
@@ -59,8 +59,8 @@ body {
 }
 
 .resize-grip {
-  width: 6px;
-  background: #c7cdd4;
+  width: 4px;
+  background: #111827;
   cursor: col-resize;
   z-index: 20;
 }
@@ -195,7 +195,7 @@ body.resizing-panels .resize-grip {
 }
 
 .auth-box {
-  padding: 12px;
+  padding: 10px 12px 12px;
 }
 
 .right-actions {
@@ -453,4 +453,57 @@ body.resizing-panels .resize-grip {
 .acc-issue-pin.selected {
   background: #d97706 !important;
   transform: translate(-50%, -50%) scale(1.15) !important;
+}
+
+
+/* Layout polish for wide issue-table workflow */
+#leftResizeGrip,
+#rightResizeGrip {
+  width: 4px;
+  background: #111827;
+}
+
+#leftResizeGrip:hover,
+#rightResizeGrip:hover,
+body.resizing-panels #leftResizeGrip,
+body.resizing-panels #rightResizeGrip {
+  background: #2563eb;
+}
+
+.viewer-panel,
+#apsViewer {
+  min-width: 0;
+}
+
+#rightPanel .right-actions {
+  height: calc(100vh - 108px);
+  overflow: auto;
+  padding: 10px 12px 12px;
+}
+
+#rightPanel .btn,
+#rightPanel .action-status {
+  display: none;
+}
+
+#rightPanel .issueSelectionModePanel:first-child,
+#rightPanel #issueSelectionModePanel {
+  margin-top: 0;
+}
+
+#issueDetailsPanel {
+  max-height: none;
+}
+
+@media (max-width: 1100px) {
+  #appLayout {
+    --left-width: 280px;
+    --right-width: 340px;
+  }
+}
+
+
+/* Revit connection OTP panel. Detailed state styles are injected by Layout.js so the panel works after hard refresh. */
+.revitConnectionPanel {
+  margin-bottom: 12px;
 }

@@ -273,8 +273,8 @@
         "in_review",
         "closed"
       ],
-      "assignedToDisplayName": "517309381",
-      "assignedToName": "517309381",
+      "assignedToDisplayName": "HKS, INC. (HKS)",
+      "assignedToName": "HKS, INC. (HKS)",
       "openedByDisplayName": "Ken Shen",
       "openedByName": "Ken Shen",
       "createdByDisplayName": "Ken Shen",
@@ -9417,10 +9417,22 @@
     }
   ],
   "count": 33,
+  "accountId": "d5201569-a23d-4fb5-917c-0a85dbda7695",
+  "projectId": "9e6cd253-f9ec-4f07-afbc-6bde2a2fb9be",
   "lookupCounts": {
-    "identities": 47,
+    "identities": 51,
+    "companies": 5,
+    "roles": 166,
     "issueTypes": 10,
     "categories": 0,
-    "rootCauses": 0
+    "rootCauses": 0,
+    "accountId": "d5201569-a23d-4fb5-917c-0a85dbda7695",
+    "projectId": "9e6cd253-f9ec-4f07-afbc-6bde2a2fb9be",
+    "projectUsers": 15,
+    "hqProjectCompanies": 2,
+    "hqIndustryRoles": 83,
+    "issueHarvestedAssigneeObjects": 5,
+    "twoLeggedCompaniesAttempted": true,
+    "twoLeggedRolesAttempted": true
   }
 }

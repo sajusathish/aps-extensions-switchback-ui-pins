@@ -1,7 +1,8 @@
 /////////////////////////////////////////////////////////////////////
 // ACC Issues route
-// Resolves users, companies, roles, issue types, categories and root causes
-// No node-fetch dependency required
+// Issues are fetched with the logged-in 3-legged user token.
+// Company and role display names are resolved server-side with 2-legged admin/HQ lookups.
+// Company issue assignee IDs are matched to company.member_group_id.
 /////////////////////////////////////////////////////////////////////
 
 const express = require('express');
@@ -10,7 +11,8 @@ const path = require('path');
 
 const {
   APS_API_BASE,
-  apsFetch
+  apsFetch,
+  apsFetchTwoLegged
 } = require('../services/aps.js');
 
 const router = express.Router();
@@ -25,12 +27,17 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function projectGuid(projectId) {
-  if (!projectId) return projectId;
+function stripB(value) {
+  if (!value) return value;
+  return String(value).startsWith('b.') ? String(value).substring(2) : String(value);
+}
 
-  return String(projectId).startsWith('b.')
-    ? String(projectId).substring(2)
-    : String(projectId);
+function projectGuid(projectId) {
+  return stripB(projectId);
+}
+
+function accountGuid(accountId) {
+  return stripB(accountId);
 }
 
 function firstNonEmpty(...values) {
@@ -43,32 +50,96 @@ function firstNonEmpty(...values) {
   return null;
 }
 
+function normaliseKey(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value).trim();
+}
+
 function normaliseId(value) {
   if (value === undefined || value === null || value === '') return null;
 
   if (typeof value === 'object') {
-    return (
-      value.id ||
-      value.userId ||
-      value.uid ||
-      value.autodeskId ||
-      value.accountUserId ||
-      value.memberId ||
-      value.companyId ||
-      value.roleId ||
-      value.attributes?.id ||
-      value.attributes?.userId ||
-      value.attributes?.uid ||
-      value.attributes?.autodeskId ||
-      value.attributes?.accountUserId ||
-      value.attributes?.memberId ||
-      value.attributes?.companyId ||
-      value.attributes?.roleId ||
-      null
+    return firstNonEmpty(
+      value.member_group_id,
+      value.memberGroupId,
+      value.memberGroupID,
+      value.memberGroup?.id,
+      value.member_group?.id,
+      value.id,
+      value.userId,
+      value.uid,
+      value.autodeskId,
+      value.accountUserId,
+      value.memberId,
+      value.companyId,
+      value.roleId,
+      value.attributes?.member_group_id,
+      value.attributes?.memberGroupId,
+      value.attributes?.memberGroupID,
+      value.attributes?.memberGroup?.id,
+      value.attributes?.member_group?.id,
+      value.attributes?.id,
+      value.attributes?.userId,
+      value.attributes?.uid,
+      value.attributes?.autodeskId,
+      value.attributes?.accountUserId,
+      value.attributes?.memberId,
+      value.attributes?.companyId,
+      value.attributes?.roleId,
+      value.relationships?.memberGroup?.data?.id,
+      value.relationships?.member_group?.data?.id
     );
   }
 
   return String(value);
+}
+
+function getCandidateKeys(value) {
+  if (value === undefined || value === null || value === '') return [];
+
+  if (typeof value !== 'object') {
+    return [normaliseKey(value)].filter(Boolean);
+  }
+
+  const attributes = value.attributes || {};
+  const relationships = value.relationships || {};
+
+  return Array.from(new Set([
+    value.member_group_id,
+    value.memberGroupId,
+    value.memberGroupID,
+    value.memberGroup?.id,
+    value.member_group?.id,
+    attributes.member_group_id,
+    attributes.memberGroupId,
+    attributes.memberGroupID,
+    attributes.memberGroup?.id,
+    attributes.member_group?.id,
+    relationships.memberGroup?.data?.id,
+    relationships.member_group?.data?.id,
+    value.id,
+    attributes.id,
+    value.userId,
+    attributes.userId,
+    value.uid,
+    attributes.uid,
+    value.autodeskId,
+    value.autodesk_id,
+    attributes.autodeskId,
+    attributes.autodesk_id,
+    value.accountUserId,
+    attributes.accountUserId,
+    value.memberId,
+    attributes.memberId,
+    value.companyId,
+    attributes.companyId,
+    value.accountCompanyId,
+    attributes.accountCompanyId,
+    value.roleId,
+    attributes.roleId,
+    value.email,
+    attributes.email
+  ].map(normaliseKey).filter(Boolean)));
 }
 
 function isRawAutodeskId(value) {
@@ -76,6 +147,7 @@ function isRawAutodeskId(value) {
 
   const trimmed = value.trim();
 
+  if (/^[0-9]+$/.test(trimmed)) return true;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return true;
   if (/^[0-9a-f]{24}$/i.test(trimmed)) return true;
   if (/^[A-Z0-9]{12,24}$/i.test(trimmed) && !trimmed.includes('@') && !trimmed.includes(' ')) return true;
@@ -96,14 +168,16 @@ function getDirectName(value) {
     return String(value);
   }
 
+  const attributes = value.attributes || {};
+
   const firstName = firstNonEmpty(
     value.firstName,
-    value.attributes?.firstName
+    attributes.firstName
   );
 
   const lastName = firstNonEmpty(
     value.lastName,
-    value.attributes?.lastName
+    attributes.lastName
   );
 
   const combinedName = `${firstName || ''} ${lastName || ''}`.trim();
@@ -117,11 +191,13 @@ function getDirectName(value) {
     value.label,
     value.companyName,
     value.roleName,
-    value.attributes?.name,
-    value.attributes?.displayName,
-    value.attributes?.fullName,
-    value.attributes?.email,
-    value.attributes?.title,
+    attributes.name,
+    attributes.displayName,
+    attributes.fullName,
+    attributes.email,
+    attributes.title,
+    attributes.companyName,
+    attributes.roleName,
     combinedName || null
   );
 }
@@ -144,28 +220,42 @@ function addIdentityObject(map, entity) {
 
   if (!displayName) return;
 
-  const keys = [
-    entity.id,
-    entity.userId,
-    entity.uid,
-    entity.autodeskId,
-    entity.accountUserId,
-    entity.memberId,
-    entity.email,
-    entity.companyId,
-    entity.roleId,
-    entity.attributes?.id,
-    entity.attributes?.userId,
-    entity.attributes?.uid,
-    entity.attributes?.autodeskId,
-    entity.attributes?.accountUserId,
-    entity.attributes?.memberId,
-    entity.attributes?.email,
-    entity.attributes?.companyId,
-    entity.attributes?.roleId
-  ];
+  getCandidateKeys(entity).forEach(key => addToMap(map, key, displayName));
+}
 
-  keys.forEach(key => addToMap(map, key, displayName));
+function addCompanyObject(companyMap, company) {
+  if (!company) return;
+
+  const displayName = getDirectName(company);
+
+  if (!displayName) return;
+
+  getCandidateKeys(company).forEach(key => addToMap(companyMap, key, displayName));
+
+  const attributes = company.attributes || {};
+
+  [
+    company.member_group_id,
+    company.memberGroupId,
+    company.memberGroupID,
+    company.memberGroup?.id,
+    company.member_group?.id,
+    attributes.member_group_id,
+    attributes.memberGroupId,
+    attributes.memberGroupID,
+    attributes.memberGroup?.id,
+    attributes.member_group?.id
+  ].forEach(key => addToMap(companyMap, key, displayName));
+}
+
+function addRoleObject(roleMap, role) {
+  if (!role) return;
+
+  const displayName = getDirectName(role);
+
+  if (!displayName) return;
+
+  getCandidateKeys(role).forEach(key => addToMap(roleMap, key, displayName));
 }
 
 function addIssueTypeObject(typeMap, categoryMap, issueType) {
@@ -267,13 +357,58 @@ async function apsFetchOptional(req, url, label) {
     return await apsFetch(req, url);
   } catch (error) {
     console.warn(
-      `Optional ACC request failed${label ? ` (${label})` : ''}:`,
+      `Optional 3-legged ACC request failed${label ? ` (${label})` : ''}:`,
       error.status || '',
-      error.message
+      error.message,
+      error.details || ''
     );
 
     return null;
   }
+}
+
+async function apsFetchTwoLeggedOptional(url, label) {
+  try {
+    return await apsFetchTwoLegged(url);
+  } catch (error) {
+    console.warn(
+      `Optional 2-legged APS request failed${label ? ` (${label})` : ''}:`,
+      error.status || '',
+      error.message,
+      error.details || ''
+    );
+
+    return null;
+  }
+}
+
+function extractPageData(body) {
+  if (Array.isArray(body)) return body;
+
+  return (
+    body?.data ||
+    body?.results ||
+    body?.users ||
+    body?.companies ||
+    body?.roles ||
+    body?.industry_roles ||
+    body?.issueTypes ||
+    body?.issueSubtypes ||
+    body?.rootCauses ||
+    []
+  );
+}
+
+function getNextUrl(body) {
+  if (Array.isArray(body)) return null;
+
+  return (
+    body?.pagination?.nextUrl ||
+    body?.links?.next?.href ||
+    body?.meta?.pagination?.nextUrl ||
+    body?.page?.nextUrl ||
+    null
+  );
 }
 
 async function fetchAllPagesFlexible(req, startUrl, label) {
@@ -285,26 +420,13 @@ async function fetchAllPagesFlexible(req, startUrl, label) {
 
     if (!body) break;
 
-    const pageData =
-      body.data ||
-      body.results ||
-      body.users ||
-      body.companies ||
-      body.roles ||
-      body.issueTypes ||
-      body.issueSubtypes ||
-      body.rootCauses ||
-      [];
+    const pageData = extractPageData(body);
 
     if (Array.isArray(pageData)) {
       allData.push(...pageData);
     }
 
-    const nextUrl =
-      body.pagination?.nextUrl ||
-      body.links?.next?.href ||
-      body.meta?.pagination?.nextUrl ||
-      null;
+    const nextUrl = getNextUrl(body);
 
     url = nextUrl
       ? nextUrl.startsWith('http')
@@ -316,11 +438,61 @@ async function fetchAllPagesFlexible(req, startUrl, label) {
   return allData;
 }
 
-async function buildProjectLookupMaps(req, accProjectId) {
+async function fetchAllPagesFlexibleTwoLegged(startUrl, label) {
+  let url = startUrl;
+  const allData = [];
+
+  while (url) {
+    const body = await apsFetchTwoLeggedOptional(url, label);
+
+    if (!body) break;
+
+    const pageData = extractPageData(body);
+
+    if (Array.isArray(pageData)) {
+      allData.push(...pageData);
+    }
+
+    const nextUrl = getNextUrl(body);
+
+    url = nextUrl
+      ? nextUrl.startsWith('http')
+        ? nextUrl
+        : `${APS_API_BASE}${nextUrl}`
+      : null;
+  }
+
+  return allData;
+}
+
+function getAccountIdFromRequest(req) {
+  return accountGuid(
+    req.query.accountId ||
+    req.query.hubId ||
+    req.headers['x-acc-account-id'] ||
+    req.headers['x-acc-hub-id'] ||
+    null
+  );
+}
+
+async function buildProjectLookupMaps(req, accProjectId, accAccountId, issues) {
   const identityMap = new Map();
+  const companyMap = new Map();
+  const roleMap = new Map();
   const typeMap = new Map();
   const categoryMap = new Map();
   const rootCauseMap = new Map();
+
+  const lookupDebug = {
+    accountId: accAccountId || null,
+    projectId: accProjectId,
+    projectUsers: 0,
+    hqProjectCompanies: 0,
+    hqIndustryRoles: 0,
+    issueHarvestedAssigneeObjects: 0,
+    twoLeggedCompaniesAttempted: false,
+    twoLeggedRolesAttempted: false
+  };
 
   const users = await fetchAllPagesFlexible(
     req,
@@ -329,22 +501,33 @@ async function buildProjectLookupMaps(req, accProjectId) {
   );
 
   users.forEach(user => addIdentityObject(identityMap, user));
+  lookupDebug.projectUsers = users.length;
 
-  const companies = await fetchAllPagesFlexible(
-    req,
-    `${APS_API_BASE}/construction/admin/v1/projects/${encodeURIComponent(accProjectId)}/companies?limit=100`,
-    'project companies'
-  );
+  if (accAccountId) {
+    lookupDebug.twoLeggedCompaniesAttempted = true;
 
-  companies.forEach(company => addIdentityObject(identityMap, company));
+    const hqProjectCompanies = await fetchAllPagesFlexibleTwoLegged(
+      `${APS_API_BASE}/hq/v1/accounts/${encodeURIComponent(accAccountId)}/projects/${encodeURIComponent(accProjectId)}/companies`,
+      'HQ project companies by member_group_id'
+    );
 
-  const roles = await fetchAllPagesFlexible(
-    req,
-    `${APS_API_BASE}/construction/admin/v1/projects/${encodeURIComponent(accProjectId)}/roles?limit=100`,
-    'project roles'
-  );
+    hqProjectCompanies.forEach(company => addCompanyObject(companyMap, company));
+    lookupDebug.hqProjectCompanies = hqProjectCompanies.length;
 
-  roles.forEach(role => addIdentityObject(identityMap, role));
+    lookupDebug.twoLeggedRolesAttempted = true;
+
+    const hqIndustryRoles = await fetchAllPagesFlexibleTwoLegged(
+      `${APS_API_BASE}/hq/v2/accounts/${encodeURIComponent(accAccountId)}/projects/${encodeURIComponent(accProjectId)}/industry_roles`,
+      'HQ project industry roles'
+    );
+
+    hqIndustryRoles.forEach(role => addRoleObject(roleMap, role));
+    lookupDebug.hqIndustryRoles = hqIndustryRoles.length;
+  } else {
+    console.warn('No accountId/hubId was supplied to the issues route. Company and role 2-legged lookups were skipped.');
+  }
+
+  harvestAssigneeObjectsFromIssues(issues || [], identityMap, companyMap, roleMap, lookupDebug);
 
   const issueTypes = await fetchAllPagesFlexible(
     req,
@@ -401,22 +584,90 @@ async function buildProjectLookupMaps(req, accProjectId) {
 
   return {
     identityMap,
+    companyMap,
+    roleMap,
     typeMap,
     categoryMap,
-    rootCauseMap
+    rootCauseMap,
+    lookupDebug
   };
 }
 
-function resolveIdentity(identityMap, value, fallback) {
+function harvestAssigneeObjectsFromIssues(issues, identityMap, companyMap, roleMap, lookupDebug) {
+  const visited = new WeakSet();
+  let count = 0;
+
+  function visit(value) {
+    if (!value || typeof value !== 'object') return;
+
+    if (visited.has(value)) return;
+    visited.add(value);
+
+    const directName = getDirectName(value);
+    const keys = getCandidateKeys(value);
+    const type = String(
+      value.type ||
+      value.assigneeType ||
+      value.assignedToType ||
+      value.attributes?.type ||
+      value.attributes?.assigneeType ||
+      value.attributes?.assignedToType ||
+      ''
+    ).toLowerCase();
+
+    if (directName && keys.length > 0) {
+      if (type.includes('company')) {
+        keys.forEach(key => addToMap(companyMap, key, directName));
+        count += 1;
+      } else if (type.includes('role')) {
+        keys.forEach(key => addToMap(roleMap, key, directName));
+        count += 1;
+      } else if (type.includes('user') || value.email || value.attributes?.email) {
+        keys.forEach(key => addToMap(identityMap, key, directName));
+        count += 1;
+      }
+    }
+
+    Object.values(value).forEach(child => {
+      if (Array.isArray(child)) {
+        child.forEach(visit);
+      } else if (child && typeof child === 'object') {
+        visit(child);
+      }
+    });
+  }
+
+  issues.forEach(visit);
+  lookupDebug.issueHarvestedAssigneeObjects = count;
+}
+
+function resolveFromMap(map, value) {
   const directName = getDirectName(value);
 
   if (directName) return directName;
 
-  const key = normaliseId(value);
+  const keys = getCandidateKeys(value);
 
-  if (!key) return fallback || '';
+  for (const key of keys) {
+    if (map.has(key)) return map.get(key);
+  }
 
-  return identityMap.get(key) || fallback || '';
+  const id = normaliseId(value);
+  if (id && map.has(id)) return map.get(id);
+
+  return null;
+}
+
+function resolveIdentity(identityMap, value, fallback) {
+  return resolveFromMap(identityMap, value) || fallback || '';
+}
+
+function resolveCompany(companyMap, value, fallback) {
+  return resolveFromMap(companyMap, value) || fallback || '';
+}
+
+function resolveRole(roleMap, value, fallback) {
+  return resolveFromMap(roleMap, value) || fallback || '';
 }
 
 function resolveIssueTypeName(typeMap, issueTypeId, issueTypeObject, fallback) {
@@ -456,7 +707,11 @@ function getIssueAssignedToValue(issue) {
   return firstNonEmpty(
     issue.assignedTo,
     issue.attributes?.assignedTo,
-    issue.assignee
+    issue.assignee,
+    issue.member_group_id,
+    issue.memberGroupId,
+    issue.attributes?.member_group_id,
+    issue.attributes?.memberGroupId
   );
 }
 
@@ -492,9 +747,29 @@ function getIssueClosedByValue(issue) {
   );
 }
 
+function getUnresolvedAssigneeLabel(assignedType, assignedToValue) {
+  const id = normaliseId(assignedToValue);
+
+  if (String(assignedType || '').toLowerCase().includes('company')) {
+    return id ? `Company ${id}` : 'Unresolved company';
+  }
+
+  if (String(assignedType || '').toLowerCase().includes('role')) {
+    return id ? `Role ${id}` : 'Unresolved role';
+  }
+
+  if (String(assignedType || '').toLowerCase().includes('user')) {
+    return id ? `User ${id}` : 'Unresolved user';
+  }
+
+  return id ? `Assignee ${id}` : 'Unassigned';
+}
+
 function enrichIssue(issue, maps) {
   const {
     identityMap,
+    companyMap,
+    roleMap,
     typeMap,
     categoryMap,
     rootCauseMap
@@ -502,17 +777,18 @@ function enrichIssue(issue, maps) {
 
   const assignedToType = getIssueAssignedToType(issue);
   const assignedToValue = getIssueAssignedToValue(issue);
+  const assignedTypeText = String(assignedToType || '').toLowerCase();
 
-  let assignedFallback = 'Assigned';
+  let assignedToDisplayName = '';
 
   if (!assignedToValue) {
-    assignedFallback = 'Unassigned';
-  } else if (String(assignedToType || '').toLowerCase().includes('company')) {
-    assignedFallback = 'Unresolved company';
-  } else if (String(assignedToType || '').toLowerCase().includes('role')) {
-    assignedFallback = 'Unresolved role';
+    assignedToDisplayName = 'Unassigned';
+  } else if (assignedTypeText.includes('company')) {
+    assignedToDisplayName = resolveCompany(companyMap, assignedToValue, getUnresolvedAssigneeLabel(assignedToType, assignedToValue));
+  } else if (assignedTypeText.includes('role')) {
+    assignedToDisplayName = resolveRole(roleMap, assignedToValue, getUnresolvedAssigneeLabel(assignedToType, assignedToValue));
   } else {
-    assignedFallback = 'Unresolved user';
+    assignedToDisplayName = resolveIdentity(identityMap, assignedToValue, getUnresolvedAssigneeLabel(assignedToType, assignedToValue));
   }
 
   const issueTypeId = firstNonEmpty(
@@ -569,7 +845,6 @@ function enrichIssue(issue, maps) {
     issue.attributes?.rootCauseName
   );
 
-  const assignedToDisplayName = resolveIdentity(identityMap, assignedToValue, assignedFallback);
   const openedByDisplayName = resolveIdentity(identityMap, getIssueOpenedByValue(issue), 'Unresolved user');
   const createdByDisplayName = resolveIdentity(identityMap, getIssueCreatedByValue(issue), 'Unresolved user');
   const updatedByDisplayName = resolveIdentity(identityMap, getIssueUpdatedByValue(issue), 'Unresolved user');
@@ -604,14 +879,161 @@ function enrichIssue(issue, maps) {
   };
 }
 
+
+router.get('/api/debug/hq-project-companies', requireAuth, async function (req, res, next) {
+  try {
+    const accountId = accountGuid(req.query.accountId);
+    const projectId = projectGuid(req.query.projectId);
+    const target = String(req.query.target || '').trim();
+
+    if (!accountId || !projectId) {
+      return res.status(400).json({
+        error: 'accountId and projectId are required.'
+      });
+    }
+
+    const url =
+      `${APS_API_BASE}/hq/v1/accounts/${encodeURIComponent(accountId)}` +
+      `/projects/${encodeURIComponent(projectId)}/companies`;
+
+    const companies = await fetchAllPagesFlexibleTwoLegged(
+      url,
+      'debug HQ project companies'
+    );
+
+    function flattenCompany(company) {
+      const attributes = company?.attributes || {};
+      const relationships = company?.relationships || {};
+
+      return {
+        id: company?.id || attributes.id || '',
+        name:
+          company?.name ||
+          company?.displayName ||
+          company?.companyName ||
+          attributes.name ||
+          attributes.displayName ||
+          attributes.companyName ||
+          '',
+        member_group_id:
+          company?.member_group_id ||
+          company?.memberGroupId ||
+          company?.memberGroupID ||
+          company?.memberGroup?.id ||
+          company?.member_group?.id ||
+          attributes.member_group_id ||
+          attributes.memberGroupId ||
+          attributes.memberGroupID ||
+          attributes.memberGroup?.id ||
+          attributes.member_group?.id ||
+          relationships.memberGroup?.data?.id ||
+          relationships.member_group?.data?.id ||
+          '',
+        keys: getCandidateKeys(company),
+        raw: company
+      };
+    }
+
+    const flatCompanies = companies.map(flattenCompany);
+
+    const exactMatches = flatCompanies.filter(company => {
+      return target && String(company.member_group_id) === target;
+    });
+
+    const keyMatches = flatCompanies.filter(company => {
+      return target && Array.isArray(company.keys) && company.keys.includes(target);
+    });
+
+    const looseMatches = flatCompanies.filter(company => {
+      try {
+        return target && JSON.stringify(company.raw).includes(target);
+      } catch {
+        return false;
+      }
+    });
+
+    res.json({
+      accountId,
+      projectId,
+      target,
+      count: companies.length,
+      companies: flatCompanies,
+      exactMatches,
+      keyMatches,
+      looseMatches
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/api/debug/hq-project-companies-raw', requireAuth, async function (req, res, next) {
+  try {
+    const accountId = accountGuid(req.query.accountId);
+    const projectId = String(req.query.projectId || '').trim();
+    const target = String(req.query.target || '').trim();
+
+    if (!accountId || !projectId) {
+      return res.status(400).json({
+        error: 'accountId and projectId are required.'
+      });
+    }
+
+    const projectCandidates = Array.from(new Set([
+      projectId,
+      stripB(projectId),
+      `b.${stripB(projectId)}`
+    ].filter(Boolean)));
+
+    const results = [];
+
+    for (const candidateProjectId of projectCandidates) {
+      const url =
+        `${APS_API_BASE}/hq/v1/accounts/${encodeURIComponent(accountId)}` +
+        `/projects/${encodeURIComponent(candidateProjectId)}/companies`;
+
+      try {
+        const body = await apsFetchTwoLegged(url);
+
+        results.push({
+          projectIdTried: candidateProjectId,
+          url,
+          ok: true,
+          rawBody: body,
+          rawBodyType: Array.isArray(body) ? 'array' : typeof body,
+          rawKeys: body && typeof body === 'object' ? Object.keys(body) : [],
+          bodyContainsTarget: target ? JSON.stringify(body).includes(target) : false
+        });
+      } catch (error) {
+        results.push({
+          projectIdTried: candidateProjectId,
+          url,
+          ok: false,
+          status: error.status || null,
+          message: error.message,
+          details: error.details || null
+        });
+      }
+    }
+
+    res.json({
+      accountId,
+      inputProjectId: projectId,
+      target,
+      results
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/api/projects/:projectId/issues', requireAuth, async function (req, res, next) {
   try {
     const rawProjectId = req.params.projectId;
     const accProjectId = projectGuid(rawProjectId);
+    const accAccountId = getAccountIdFromRequest(req);
     const issues = [];
     const limit = 100;
-
-    const maps = await buildProjectLookupMaps(req, accProjectId);
 
     let url =
       `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issues` +
@@ -623,11 +1045,7 @@ router.get('/api/projects/:projectId/issues', requireAuth, async function (req, 
       const pageIssues = body.data || body.results || body.issues || [];
       issues.push(...pageIssues);
 
-      const nextUrl =
-        body.pagination?.nextUrl ||
-        body.links?.next?.href ||
-        body.meta?.pagination?.nextUrl ||
-        null;
+      const nextUrl = getNextUrl(body);
 
       url = nextUrl
         ? nextUrl.startsWith('http')
@@ -636,6 +1054,7 @@ router.get('/api/projects/:projectId/issues', requireAuth, async function (req, 
         : null;
     }
 
+    const maps = await buildProjectLookupMaps(req, accProjectId, accAccountId, issues);
     const enrichedIssues = issues.map(issue => enrichIssue(issue, maps));
 
     const debugFolder = path.join(process.cwd(), 'switchback-output');
@@ -644,35 +1063,29 @@ router.get('/api/projects/:projectId/issues', requireAuth, async function (req, 
       fs.mkdirSync(debugFolder, { recursive: true });
     }
 
+    const responseBody = {
+      data: enrichedIssues,
+      count: enrichedIssues.length,
+      accountId: accAccountId || null,
+      projectId: accProjectId,
+      lookupCounts: {
+        identities: maps.identityMap.size,
+        companies: maps.companyMap.size,
+        roles: maps.roleMap.size,
+        issueTypes: maps.typeMap.size,
+        categories: maps.categoryMap.size,
+        rootCauses: maps.rootCauseMap.size,
+        ...maps.lookupDebug
+      }
+    };
+
     fs.writeFileSync(
       path.join(debugFolder, `latest-issues-${accProjectId}.json`),
-      JSON.stringify(
-        {
-          data: enrichedIssues,
-          count: enrichedIssues.length,
-          lookupCounts: {
-            identities: maps.identityMap.size,
-            issueTypes: maps.typeMap.size,
-            categories: maps.categoryMap.size,
-            rootCauses: maps.rootCauseMap.size
-          }
-        },
-        null,
-        2
-      ),
+      JSON.stringify(responseBody, null, 2),
       'utf8'
     );
 
-    res.json({
-      data: enrichedIssues,
-      count: enrichedIssues.length,
-      lookupCounts: {
-        identities: maps.identityMap.size,
-        issueTypes: maps.typeMap.size,
-        categories: maps.categoryMap.size,
-        rootCauses: maps.rootCauseMap.size
-      }
-    });
+    res.json(responseBody);
   } catch (err) {
     next(err);
   }
