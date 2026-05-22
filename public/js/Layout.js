@@ -5,6 +5,7 @@
 (function () {
   var currentIssueDetail = null;
   var loadedIssues = [];
+  var selectedIssueTableId = null;
   var currentIssueFilters = {
     category: '',
     type: '',
@@ -107,6 +108,16 @@
     if (name) return String(name);
 
     return fallback || '-';
+  }
+
+  function getIssueId(issue, summary) {
+    return (
+      summary?.id ||
+      issue?.id ||
+      issue?.issueId ||
+      issue?.attributes?.id ||
+      null
+    );
   }
 
   function getIssueDisplayId(issue, summary) {
@@ -401,7 +412,7 @@
     var panel = document.getElementById('revitConnectionPanel');
     var otpValue = document.getElementById('revitConnectionOtpValue');
     var meta = document.getElementById('revitConnectionOtpMeta');
-    //var button = document.getElementById('connectRevitInstanceButton');
+    var button = document.getElementById('connectRevitInstanceButton');
 
     if (!panel || !otpValue || !meta) return;
 
@@ -411,9 +422,9 @@
     otpValue.textContent = otpInfo.otp;
     meta.textContent = 'Use this OTP in Revit.';
 
-   // if (button) {
-      //button.textContent = 'Refresh Revit OTP';
-    //}
+    if (button) {
+      button.textContent = 'Refresh Revit OTP';
+    }
 
     window.accSwitchbackRevitOtp = otpInfo.otp;
     window.accSwitchbackRevitOtpPayload = getSwitchbackOtpPayload();
@@ -1063,9 +1074,13 @@
 
       .issueTable tbody tr.active,
       .issueTable tbody tr.active td {
-        background: #dbeafe;
+        background: #dbeafe !important;
         color: #0f172a;
         font-weight: 650;
+      }
+
+      .issueTable tbody tr.active {
+        box-shadow: inset 4px 0 0 #2563eb;
       }
 
 
@@ -1318,7 +1333,7 @@
     issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
   }
 
-  function renderIssueTable(issues, selectedIssueId) {
+  function renderIssueTable(issues, selectedIssueIdForRender) {
     var tbody = document.getElementById('issueTableBody');
     if (!tbody) return;
 
@@ -1328,8 +1343,9 @@
     }
 
     tbody.innerHTML = issues.map(function (issue) {
-      var issueId = issue?.id || issue?.issueId || issue?.attributes?.id || '';
-      var rowClass = issueId && issueId === selectedIssueId ? ' class="active"' : '';
+      var issueId = getIssueId(issue, {}) || '';
+      var isActive = issueId && selectedIssueIdForRender && normalise(issueId) === normalise(selectedIssueIdForRender);
+      var rowClass = isActive ? ' class="active"' : '';
       var status = text(getIssueStatus(issue, {}), '-');
       var dueDate = formatDate(getDueDate(issue));
       var createdBy = getOpenedBy(issue);
@@ -1884,14 +1900,15 @@
 
     document.addEventListener('accissueselected', function (event) {
       showIssueDetails(event.detail || {});
-      var selectedIssueId = event.detail?.issue?.id || event.detail?.issue?.issueId || event.detail?.issue?.attributes?.id || null;
-      renderIssueTable(loadedIssues, selectedIssueId);
+      var detail = event.detail || {};
+      selectedIssueTableId = getIssueId(detail.issue || {}, detail.summary || {}) || selectedIssueTableId;
+      renderIssueTable(loadedIssues, selectedIssueTableId);
     });
 
     document.addEventListener('accissuesloaded', function (event) {
       loadedIssues = event.detail?.issues || [];
       updateIssueFilterOptions(loadedIssues);
-      renderIssueTable(loadedIssues);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
     });
 
     document.addEventListener('accissuefilterresult', function (event) {
@@ -1909,6 +1926,8 @@
       if (row) {
         var issueId = row.getAttribute('data-issue-id');
         if (issueId) {
+          selectedIssueTableId = issueId;
+          renderIssueTable(loadedIssues, selectedIssueTableId);
           document.dispatchEvent(new CustomEvent('accissuetableselect', { detail: { issueId: issueId, openSavedView: getOpenSavedViewOnSelectSetting() } }));
         }
       }
