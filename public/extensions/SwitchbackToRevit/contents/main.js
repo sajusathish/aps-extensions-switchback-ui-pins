@@ -1,9 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// Revit Switchback Extension
-// Captures current APS viewer camera/view context and writes JSON for Dynamo/Revit.
-// Viewer-state based, not issue based.
-/////////////////////////////////////////////////////////////////////
-
+// Viewer extension responsible for creating the switchback JSON payload for Revit.
+// Do not put OTP generation or issue table rendering code here.
 class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
   constructor(viewer, options) {
     super(viewer, options);
@@ -11,9 +7,14 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
     this.toolbarGroup = null;
     this.switchbackButton = null;
     this.statusElement = null;
+    this.toastElement = null;
+    this.toastTimer = null;
+    this.buttonFeedbackTimer = null;
 
     this.defaultQuietMs = 500;
     this.defaultMaxWaitMs = 2500;
+
+    this.onModelChanged = this.updateSwitchbackButtonState.bind(this);
   }
 
   load() {
@@ -26,7 +27,8 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
       return await this.sendSwitchback();
     };
 
-    console.log('RevitSwitchbackExtension loaded.');
+    this.addViewerModelEvents();
+
     return true;
   }
 
@@ -40,7 +42,10 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
       delete window.switchbackToRevitFromViewer;
     }
 
-    console.log('RevitSwitchbackExtension unloaded.');
+    this.removeViewerModelEvents();
+    this.clearSwitchbackToast();
+    window.clearTimeout(this.buttonFeedbackTimer);
+
     return true;
   }
 
@@ -59,7 +64,8 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
     }
 
     this.switchbackButton = new Autodesk.Viewing.UI.Button('revitSwitchbackButton');
-    this.switchbackButton.setToolTip('Switchback current APS view to Revit');
+    this.switchbackButton.container.classList.add('switchback-to-revit-button');
+    this.updateSwitchbackButtonState();
 
     this.switchbackButton.onClick = async () => {
       await this.sendSwitchback();
@@ -68,15 +74,77 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
     const icon = this.switchbackButton.container.querySelector('.adsk-button-icon');
 
     if (icon) {
-      icon.textContent = 'R';
-      icon.style.fontSize = '15px';
-      icon.style.fontWeight = '700';
-      icon.style.lineHeight = '24px';
-      icon.style.textAlign = 'center';
-      icon.style.color = '#ffffff';
+      icon.textContent = '';
     }
 
     this.toolbarGroup.addControl(this.switchbackButton);
+    this.updateSwitchbackButtonState();
+  }
+
+  addViewerModelEvents() {
+    if (!this.viewer || typeof this.viewer.addEventListener !== 'function') return;
+
+    [
+      Autodesk.Viewing.GEOMETRY_LOADED_EVENT,
+      Autodesk.Viewing.MODEL_ROOT_LOADED_EVENT,
+      Autodesk.Viewing.MODEL_ADDED_EVENT,
+      Autodesk.Viewing.MODEL_REMOVED_EVENT
+    ].forEach(eventName => {
+      if (eventName) this.viewer.addEventListener(eventName, this.onModelChanged);
+    });
+
+    document.addEventListener('viewerdocumentviewchanged', this.onModelChanged);
+  }
+
+  removeViewerModelEvents() {
+    if (this.viewer && typeof this.viewer.removeEventListener === 'function') {
+      [
+        Autodesk.Viewing.GEOMETRY_LOADED_EVENT,
+        Autodesk.Viewing.MODEL_ROOT_LOADED_EVENT,
+        Autodesk.Viewing.MODEL_ADDED_EVENT,
+        Autodesk.Viewing.MODEL_REMOVED_EVENT
+      ].forEach(eventName => {
+        if (eventName) this.viewer.removeEventListener(eventName, this.onModelChanged);
+      });
+    }
+
+    document.removeEventListener('viewerdocumentviewchanged', this.onModelChanged);
+  }
+
+  updateSwitchbackButtonState() {
+    if (!this.switchbackButton) return;
+
+    const is2d = this.isCurrentModel2d();
+    const tooltip = is2d
+      ? "Can't switch back to 2D views/sheets"
+      : 'Switchback current APS view to Revit';
+
+    this.switchbackButton.setToolTip(tooltip);
+    this.switchbackButton.container.title = tooltip;
+    this.switchbackButton.container.setAttribute('aria-label', tooltip);
+    this.switchbackButton.container.classList.toggle('switchback-to-revit-button-disabled', is2d);
+
+    if (typeof this.switchbackButton.setState === 'function') {
+      this.switchbackButton.setState(is2d
+        ? Autodesk.Viewing.UI.Button.State.DISABLED
+        : Autodesk.Viewing.UI.Button.State.INACTIVE);
+    }
+  }
+
+  isCurrentModel2d() {
+    try {
+      const model = this.viewer?.model;
+      if (!model) return false;
+
+      if (typeof model.is2d === 'function') {
+        return model.is2d() === true;
+      }
+
+      const data = model.getData?.() || {};
+      return data.is2d === true || data.loadOptions?.is2d === true;
+    } catch {
+      return false;
+    }
   }
 
   setStatus(message) {
@@ -84,7 +152,47 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
       this.statusElement.textContent = message;
     }
 
-    console.log('[Revit Switchback]', message);
+  }
+
+  showSwitchbackToast(message, timeoutMs = 8000, type = 'info') {
+    const parent = this.viewer?.container || document.body;
+
+    if (!this.toastElement) {
+      this.toastElement = document.createElement('div');
+      this.toastElement.className = 'viewer-switchback-toast switchback-to-revit-toast';
+      parent.appendChild(this.toastElement);
+    }
+
+    this.toastElement.textContent = message;
+    this.toastElement.classList.toggle('failed', type === 'failed');
+    this.toastElement.classList.add('visible');
+
+    window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
+      this.clearSwitchbackToast();
+    }, timeoutMs);
+  }
+
+  clearSwitchbackToast() {
+    window.clearTimeout(this.toastTimer);
+    this.toastTimer = null;
+
+    if (this.toastElement && this.toastElement.parentNode) {
+      this.toastElement.parentNode.removeChild(this.toastElement);
+    }
+
+    this.toastElement = null;
+  }
+
+  showButtonFeedback() {
+    if (!this.switchbackButton?.container) return;
+
+    this.switchbackButton.container.classList.add('switchback-to-revit-button-working');
+
+    window.clearTimeout(this.buttonFeedbackTimer);
+    this.buttonFeedbackTimer = window.setTimeout(() => {
+      this.switchbackButton?.container?.classList.remove('switchback-to-revit-button-working');
+    }, 700);
   }
 
   async sendSwitchback() {
@@ -93,7 +201,13 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
         throw new Error('Load a model first before using Switchback.');
       }
 
-      this.setStatus('Switchback: waiting for viewer camera to settle...');
+      if (this.isCurrentModel2d()) {
+        throw new Error("Can't switch back to 2D views/sheets.");
+      }
+
+      this.showButtonFeedback();
+      this.showSwitchbackToast('Aligning view with the synced Revit session');
+      this.setStatus('Aligning view with the synced Revit session');
 
       await this.waitForViewerCameraToSettle(
         this.viewer,
@@ -103,7 +217,7 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
 
       const payload = this.createSwitchbackPayload();
 
-      this.setStatus('Switchback: writing JSON...');
+      this.setStatus('Aligning view with the synced Revit session');
 
       const response = await fetch('/api/switchback', {
         method: 'POST',
@@ -120,9 +234,7 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
         throw new Error(body?.error || body?.details || `Switchback failed: ${response.status}`);
       }
 
-      const message = body?.filePath
-        ? `Switchback JSON written: ${body.filePath}`
-        : 'Switchback JSON written.';
+      const message = 'Aligning view with the synced Revit session';
 
       this.setStatus(message);
 
@@ -142,6 +254,7 @@ class RevitSwitchbackExtension extends Autodesk.Viewing.Extension {
       };
     } catch (error) {
       this.setStatus('Switchback failed: ' + error.message);
+      this.showSwitchbackToast('Switchback failed: ' + error.message, 10000, 'failed');
 
       document.dispatchEvent(new CustomEvent('switchbackcomplete', {
         detail: {

@@ -1,85 +1,89 @@
-/////////////////////////////////////////////////////////////////////
-// Extension loader for APS Viewer extensions
-/////////////////////////////////////////////////////////////////////
-
+// Loads viewer extension CSS/JS files listed in public/extensions/config.json.
+// Keep individual extension behavior inside each extension folder.
 $(document).ready(function () {
-  loadJSON(init);
+  loadJson(initExtensionLoader);
 
-  function init(config) {
-    var Extensions = config.Extensions || [];
-    var loaderconfig = { Viewer: null };
+  function initExtensionLoader(config) {
+    var extensions = config.Extensions || [];
 
-    Extensions.forEach(function (element) {
-      var path = 'extensions/' + element.name + '/contents/';
-      (element.filestoload?.cssfiles || []).forEach(function (file) {
-        loadjscssfile(path + file, 'css');
+    extensions.forEach(function (extension) {
+      var folderPath = 'extensions/' + extension.name + '/contents/';
+
+      (extension.filestoload?.cssfiles || []).forEach(function (file) {
+        loadCssOrScript(folderPath + file, 'css');
       });
-      (element.filestoload?.jsfiles || []).forEach(function (file) {
-        loadjscssfile(path + file, 'js');
+
+      (extension.filestoload?.jsfiles || []).forEach(function (file) {
+        loadCssOrScript(folderPath + file, 'js');
       });
     });
 
-    document.addEventListener('loadextension', function (e) {
-      if (!e.detail?.viewer || !e.detail?.extension) return;
-      loaderconfig.Viewer = e.detail.viewer;
-      e.detail.viewer.loadExtension(e.detail.extension, e.detail.options || {});
+    document.addEventListener('loadextension', function (event) {
+      if (!event.detail?.viewer || !event.detail?.extension) return;
+
+      event.detail.viewer.loadExtension(event.detail.extension, event.detail.options || {});
     });
 
-    document.addEventListener('unloadextension', function (e) {
-      if (!e.detail?.viewer || !e.detail?.extension) return;
-      e.detail.viewer.unloadExtension(e.detail.extension);
+    document.addEventListener('unloadextension', function (event) {
+      if (!event.detail?.viewer || !event.detail?.extension) return;
+
+      event.detail.viewer.unloadExtension(event.detail.extension);
     });
 
-    document.addEventListener('viewerinstance', function (e) {
-      loaderconfig.Viewer = e.detail.viewer;
-      loadStartupExtensions(loaderconfig.Viewer);
+    document.addEventListener('viewerinstance', function (event) {
+      loadStartupExtensions(event.detail.viewer);
     });
 
     function loadStartupExtensions(viewer) {
-      Extensions.forEach(function (element) {
-        if (element.loadonstartup === 'true') {
-          viewer.loadExtension(element.name, element.options || {}).catch(function (error) {
-            console.warn('Could not load startup extension:', element.name, error);
+      extensions.forEach(function (extension) {
+        if (extension.loadonstartup === 'true') {
+          var extensionId = extension.extensionId || extension.name;
+
+          if (viewer.getExtension(extensionId)) return;
+
+          viewer.loadExtension(extensionId, extension.options || {}).catch(function (error) {
+            console.warn('Could not load startup extension:', extensionId, error);
           });
         }
       });
     }
 
-    function loadjscssfile(filename, filetype) {
-      var existing = Array.from(document.getElementsByTagName(filetype === 'js' ? 'script' : 'link')).some(function (el) {
-        return el.getAttribute('src') === filename || el.getAttribute('href') === filename;
+    function loadCssOrScript(filename, filetype) {
+      var tagName = filetype === 'js' ? 'script' : 'link';
+      var existing = Array.from(document.getElementsByTagName(tagName)).some(function (element) {
+        return element.getAttribute('src') === filename || element.getAttribute('href') === filename;
       });
 
       if (existing) return;
 
-      var fileref;
+      var fileElement;
 
       if (filetype === 'js') {
-        fileref = document.createElement('script');
-        fileref.setAttribute('type', 'text/javascript');
-        fileref.setAttribute('src', filename);
+        fileElement = document.createElement('script');
+        fileElement.setAttribute('type', 'text/javascript');
+        fileElement.setAttribute('src', filename);
       } else if (filetype === 'css') {
-        fileref = document.createElement('link');
-        fileref.setAttribute('rel', 'stylesheet');
-        fileref.setAttribute('type', 'text/css');
-        fileref.setAttribute('href', filename);
+        fileElement = document.createElement('link');
+        fileElement.setAttribute('rel', 'stylesheet');
+        fileElement.setAttribute('type', 'text/css');
+        fileElement.setAttribute('href', filename);
       }
 
-      if (fileref) {
-        document.getElementsByTagName('head')[0].appendChild(fileref);
+      if (fileElement) {
+        document.head.appendChild(fileElement);
       }
     }
   }
 
-  function loadJSON(callback) {
-    var xobj = new XMLHttpRequest();
-    xobj.overrideMimeType('application/json');
-    xobj.open('GET', 'extensions/config.json', true);
-    xobj.onreadystatechange = function () {
-      if (xobj.readyState == 4 && xobj.status == '200') {
-        callback(JSON.parse(xobj.responseText));
+  function loadJson(callback) {
+    var request = new XMLHttpRequest();
+    request.overrideMimeType('application/json');
+    request.open('GET', 'extensions/config.json', true);
+    request.onreadystatechange = function () {
+      if (request.readyState === 4 && request.status === 200) {
+        callback(JSON.parse(request.responseText));
       }
     };
-    xobj.send(null);
+    request.send(null);
   }
 });

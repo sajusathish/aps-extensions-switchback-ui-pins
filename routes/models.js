@@ -1,8 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// ACC Data Management tree routes for 3-legged user access
-// Includes ACC Issues API enrichment for filters and issue details
-/////////////////////////////////////////////////////////////////////
-
+// Server routes for ACC hubs, projects, folders, items, and model/viewer URNs.
+// Do not put ACC issue editing logic here; use routes/issues.js.
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -45,6 +42,31 @@ function projectGuid(projectId) {
 function valueOrNull(value) {
     if (value === undefined || value === null || value === '') return null;
     return value;
+}
+
+function getVersionNumber(version) {
+    const value = Number(version?.attributes?.versionNumber);
+    return Number.isFinite(value) ? value : 0;
+}
+
+function getVersionTime(version) {
+    const value = (
+        version?.attributes?.lastModifiedTime ||
+        version?.attributes?.createTime ||
+        version?.attributes?.createTimeUtc ||
+        version?.attributes?.lastModifiedTimeUtc ||
+        ''
+    );
+    const time = Date.parse(value);
+
+    return Number.isNaN(time) ? 0 : time;
+}
+
+function compareVersionsNewestFirst(a, b) {
+    const numberDiff = getVersionNumber(b) - getVersionNumber(a);
+    if (numberDiff !== 0) return numberDiff;
+
+    return getVersionTime(b) - getVersionTime(a);
 }
 
 function normaliseId(value) {
@@ -685,15 +707,16 @@ router.get('/api/models/acc-tree', requireAuth, async function (req, res, next) 
                 `${APS_API_BASE}/data/v1/projects/${encodeURIComponent(projectId)}/items/${encodeURIComponent(itemId)}/versions`
             );
 
-            return res.json(versions.map(version => {
+            return res.json(versions.slice().sort(compareVersionsNewestFirst).map(version => {
                 const versionNumber = version?.attributes?.versionNumber;
                 const baseName = getDisplayName(version);
+                const versionLabel = versionNumber ? `V${versionNumber}` : 'Version';
                 const label = versionNumber ? `${baseName} - V${versionNumber}` : baseName;
                 const viewerUrn = getViewerUrnFromVersion(version);
 
                 return makeNode(version, 'version', {
                     id: version.id,
-                    text: label,
+                    text: versionLabel,
                     children: false,
                     data: {
                         hubId,
@@ -701,7 +724,10 @@ router.get('/api/models/acc-tree', requireAuth, async function (req, res, next) 
                         itemId,
                         viewerUrn,
                         versionId: version.id,
-                        name: label
+                        versionNumber,
+                        name: label,
+                        baseName,
+                        lastModifiedTime: version?.attributes?.lastModifiedTime || version?.attributes?.createTime || null
                     }
                 });
             }));

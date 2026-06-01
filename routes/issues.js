@@ -1,10 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// ACC Issues route
-// Issues are fetched with the logged-in 3-legged user token.
-// Company and role display names are resolved server-side with 2-legged admin/HQ lookups.
-// Company issue assignee IDs are matched to company.member_group_id.
-/////////////////////////////////////////////////////////////////////
-
+// Server routes for ACC Issues: loading, enriching, updating, comments, thumbnails, and settings.
+// Do not put browser UI rendering code here.
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -202,6 +197,147 @@ function getDirectName(value) {
   );
 }
 
+function getIssueSnapshotUrn(issue) {
+  return firstNonEmpty(
+    issue?.snapshotUrn,
+    issue?.attributes?.snapshotUrn,
+    issue?.snapshot?.urn,
+    issue?.attributes?.snapshot?.urn
+  );
+}
+
+function parseOssObjectUrn(urn) {
+  let value = String(urn || '').trim();
+
+  if (value && !value.startsWith('urn:')) {
+    try {
+      const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+      const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+      const decoded = Buffer.from(base64 + padding, 'base64').toString('utf8').trim();
+
+      if (decoded.startsWith('urn:')) {
+        value = decoded;
+      }
+    } catch (_) {}
+  }
+
+  const match = /^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/i.exec(value);
+
+  if (!match) return null;
+
+  return {
+    bucketKey: match[1],
+    objectName: match[2]
+  };
+}
+
+async function getSignedObjectDownloadUrl(req, objectInfo) {
+  const signedUrl =
+    `${APS_API_BASE}/oss/v2/buckets/${encodeURIComponent(objectInfo.bucketKey)}` +
+    `/objects/${encodeURIComponent(objectInfo.objectName)}/signeds3download?minutesExpiration=10`;
+  const body = await apsFetch(req, signedUrl);
+
+  return firstNonEmpty(
+    body?.url,
+    body?.signedUrl,
+    body?.signedURL,
+    body?.downloadUrl,
+    body?.downloadURL,
+    body?.data?.url,
+    body?.data?.signedUrl
+  );
+}
+
+function cleanAssigneeName(name, type) {
+  if (!name) return name;
+
+  let clean = String(name).trim();
+
+  if (String(type || '').toLowerCase() === 'role') {
+    clean = clean.replace(/^\d+\s+/, '').replace(/\s+\(role\)$/i, '').trim();
+  }
+
+  return clean;
+}
+
+function getUserRoleObjects(user) {
+  if (!user || typeof user !== 'object') return [];
+
+  const attributes = user.attributes || {};
+  const candidates = [
+    user.role,
+    user.roles,
+    user.projectRole,
+    user.projectRoles,
+    user.industryRole,
+    user.industryRoles,
+    user.industry_roles,
+    attributes.role,
+    attributes.roles,
+    attributes.projectRole,
+    attributes.projectRoles,
+    attributes.industryRole,
+    attributes.industryRoles,
+    attributes.industry_roles
+  ];
+
+  return candidates.flatMap(value => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    return [value];
+  });
+}
+
+function buildProjectRoleOptions(users, roles) {
+  const roleOptions = uniqueOptions(roles.map(role => makeOption(role, 'role', 'Role')));
+  const rolesByKey = new Map();
+  const rolesByName = new Map();
+
+  roleOptions.forEach(option => {
+    rolesByKey.set(option.id, option);
+    getCandidateKeys(option.raw).forEach(key => rolesByKey.set(key, option));
+    rolesByName.set(cleanAssigneeName(option.name, 'role').toLowerCase(), option);
+  });
+
+  const projectRoleOptions = [];
+
+  users.forEach(user => {
+    getUserRoleObjects(user).forEach(role => {
+      const directOption = makeOption(role, 'role', 'Role');
+
+      if (!directOption || directOption.name === 'Role') {
+        return;
+      }
+
+      const matchedByKey = getCandidateKeys(role).some(key => {
+        const option = rolesByKey.get(key);
+        if (option) {
+          projectRoleOptions.push(option);
+          return true;
+        }
+
+        return false;
+      });
+
+      if (matchedByKey) return;
+
+      const matchedByName = rolesByName.get(cleanAssigneeName(directOption.name, 'role').toLowerCase());
+      if (matchedByName) {
+        projectRoleOptions.push(matchedByName);
+        return;
+      }
+
+      if (typeof role === 'object') {
+        projectRoleOptions.push(directOption);
+      }
+    });
+  });
+
+  return projectRoleOptions.length > 0
+    ? uniqueOptions(projectRoleOptions)
+    : roleOptions;
+}
+
 function addToMap(map, key, value) {
   if (!key || !value) return;
 
@@ -251,7 +387,7 @@ function addCompanyObject(companyMap, company) {
 function addRoleObject(roleMap, role) {
   if (!role) return;
 
-  const displayName = getDirectName(role);
+  const displayName = cleanAssigneeName(getDirectName(role), 'role');
 
   if (!displayName) return;
 
@@ -356,6 +492,10 @@ async function apsFetchOptional(req, url, label) {
   try {
     return await apsFetch(req, url);
   } catch (error) {
+    if (error.status === 404) {
+      return null;
+    }
+
     console.warn(
       `Optional 3-legged ACC request failed${label ? ` (${label})` : ''}:`,
       error.status || '',
@@ -747,6 +887,62 @@ function getIssueClosedByValue(issue) {
   );
 }
 
+function isPlaceholderDisplayName(value) {
+  const clean = String(value || '').trim().toLowerCase();
+
+  return !clean ||
+    clean === '-' ||
+    clean === 'user' ||
+    clean === 'unknown' ||
+    clean === 'unknown user' ||
+    clean === 'unresolved user' ||
+    isRawAutodeskId(clean);
+}
+
+function cleanDisplayName(value) {
+  const clean = String(value || '').trim();
+  return isPlaceholderDisplayName(clean) ? '' : clean;
+}
+
+function getCommentCreatedByValue(comment) {
+  return comment?.createdBy || null;
+}
+
+function getCommentDirectAuthorName(comment) {
+  return cleanDisplayName(firstNonEmpty(
+    comment.createdByDisplayName,
+    comment.createdByName,
+    getDirectName(comment.createdBy)
+  ));
+}
+
+function enrichComment(comment, identityMap) {
+  const directAuthorName = getCommentDirectAuthorName(comment);
+  const resolvedAuthorName = cleanDisplayName(resolveIdentity(identityMap, getCommentCreatedByValue(comment), ''));
+  const authorName = directAuthorName || resolvedAuthorName;
+
+  if (!authorName) return comment;
+
+  return {
+    ...comment,
+    createdByDisplayName: authorName,
+    createdByName: authorName
+  };
+}
+
+async function buildProjectIdentityMap(req, accProjectId) {
+  const identityMap = new Map();
+  const users = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/admin/v1/projects/${encodeURIComponent(accProjectId)}/users?limit=100`,
+    'project users'
+  );
+
+  users.forEach(user => addIdentityObject(identityMap, user));
+
+  return identityMap;
+}
+
 function getUnresolvedAssigneeLabel(assignedType, assignedToValue) {
   const id = normaliseId(assignedToValue);
 
@@ -878,6 +1074,699 @@ function enrichIssue(issue, maps) {
     locationName: locationName || ''
   };
 }
+
+function optionId(entity) {
+  return firstNonEmpty(normaliseId(entity), ...getCandidateKeys(entity));
+}
+
+function makeOption(entity, type, fallbackName) {
+  const id = optionId(entity);
+  const name = cleanAssigneeName(getDirectName(entity) || fallbackName || id, type);
+
+  if (!id || !name) return null;
+
+  return {
+    id: String(id),
+    name: String(name),
+    type,
+    label: type === 'user' ? 'Member' : type === 'role' ? 'Role' : 'Company',
+    raw: entity
+  };
+}
+
+function uniqueOptions(options) {
+  const seen = new Set();
+
+  return options
+    .filter(Boolean)
+    .filter(option => {
+      const key = `${option.type}:${option.id}`;
+
+      if (seen.has(key)) return false;
+
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function getIssueTypeId(issueType) {
+  return firstNonEmpty(
+    issueType?.id,
+    issueType?.issueTypeId,
+    issueType?.attributes?.id,
+    issueType?.attributes?.issueTypeId
+  );
+}
+
+function getIssueTypeName(issueType) {
+  return firstNonEmpty(
+    issueType?.title,
+    issueType?.name,
+    issueType?.displayName,
+    issueType?.attributes?.title,
+    issueType?.attributes?.name,
+    issueType?.attributes?.displayName
+  );
+}
+
+function getIssueTypeCategory(issueType) {
+  return firstNonEmpty(
+    issueType?.category,
+    issueType?.categoryName,
+    issueType?.attributes?.category,
+    issueType?.attributes?.categoryName
+  );
+}
+
+function getSubtypesFromIssueType(issueType) {
+  return (
+    issueType?.subtypes ||
+    issueType?.issueSubtypes ||
+    issueType?.attributes?.subtypes ||
+    issueType?.attributes?.issueSubtypes ||
+    []
+  );
+}
+
+function buildIssueTypeOptions(issueTypes, issueSubtypes) {
+  const issueTypeById = new Map();
+  const options = [];
+
+  issueTypes.forEach(issueType => {
+    const issueTypeId = getIssueTypeId(issueType);
+    const issueTypeName = getIssueTypeName(issueType);
+    const categoryName = getIssueTypeCategory(issueType) || issueTypeName || '';
+
+    if (issueTypeId) {
+      issueTypeById.set(issueTypeId, {
+        id: String(issueTypeId),
+        name: issueTypeName || String(issueTypeId),
+        categoryName
+      });
+    }
+
+    const subtypes = getSubtypesFromIssueType(issueType);
+
+    if (Array.isArray(subtypes)) {
+      subtypes.forEach(subtype => {
+        const subtypeId = getIssueTypeId(subtype);
+        const subtypeName = getIssueTypeName(subtype);
+
+        if (!subtypeId || !subtypeName) return;
+
+        options.push({
+          id: String(subtypeId),
+          name: String(subtypeName),
+          issueTypeId: issueTypeId ? String(issueTypeId) : '',
+          issueTypeName: issueTypeName || '',
+          categoryName
+        });
+      });
+    }
+  });
+
+  issueSubtypes.forEach(subtype => {
+    const subtypeId = getIssueTypeId(subtype);
+    const subtypeName = getIssueTypeName(subtype);
+    const issueTypeId = firstNonEmpty(subtype.issueTypeId, subtype.attributes?.issueTypeId);
+    const parent = issueTypeId ? issueTypeById.get(issueTypeId) : null;
+
+    if (!subtypeId || !subtypeName) return;
+
+    options.push({
+      id: String(subtypeId),
+      name: String(subtypeName),
+      issueTypeId: issueTypeId ? String(issueTypeId) : '',
+      issueTypeName: parent?.name || '',
+      categoryName: parent?.categoryName || ''
+    });
+  });
+
+  return uniqueOptions(options.map(option => ({
+    ...option,
+    type: 'issueSubtype'
+  })));
+}
+
+function getRootCauseId(rootCause) {
+  return firstNonEmpty(
+    rootCause?.id,
+    rootCause?.rootCauseId,
+    rootCause?.attributes?.id,
+    rootCause?.attributes?.rootCauseId
+  );
+}
+
+function getRootCauseName(rootCause) {
+  return firstNonEmpty(
+    rootCause?.title,
+    rootCause?.name,
+    rootCause?.displayName,
+    rootCause?.attributes?.title,
+    rootCause?.attributes?.name,
+    rootCause?.attributes?.displayName
+  );
+}
+
+function buildRootCauseOptions(rootCauseCategories, rootCauses) {
+  const options = [];
+
+  rootCauseCategories.forEach(category => {
+    const categoryName = getRootCauseName(category) || '';
+    const children = category?.rootCauses || category?.root_causes || category?.attributes?.rootCauses || [];
+
+    if (Array.isArray(children)) {
+      children.forEach(rootCause => {
+        const id = getRootCauseId(rootCause);
+        const name = getRootCauseName(rootCause);
+
+        if (!id || !name) return;
+
+        options.push({
+          id: String(id),
+          name: String(name),
+          categoryName,
+          type: 'rootCause'
+        });
+      });
+    }
+  });
+
+  rootCauses.forEach(rootCause => {
+    const id = getRootCauseId(rootCause);
+    const name = getRootCauseName(rootCause);
+
+    if (!id || !name) return;
+
+    options.push({
+      id: String(id),
+      name: String(name),
+      categoryName: '',
+      type: 'rootCause'
+    });
+  });
+
+  return uniqueOptions(options);
+}
+
+function getCustomAttributeOptions(definition) {
+  const candidates = [
+    definition?.options,
+    definition?.values,
+    definition?.listOptions,
+    definition?.allowedValues,
+    definition?.possibleValues,
+    definition?.permittedValues,
+    definition?.metadata?.options,
+    definition?.metadata?.values,
+    definition?.metadata?.listOptions,
+    definition?.metadata?.list?.options,
+    definition?.metadata?.list?.values,
+    definition?.metadata?.allowedValues,
+    definition?.metadata?.possibleValues,
+    definition?.metadata?.permittedValues,
+    definition?.attributes?.options,
+    definition?.attributes?.values,
+    definition?.attributes?.listOptions,
+    definition?.attributes?.allowedValues,
+    definition?.attributes?.possibleValues,
+    definition?.attributes?.permittedValues,
+    definition?.attributes?.metadata?.options,
+    definition?.attributes?.metadata?.values,
+    definition?.attributes?.metadata?.listOptions,
+    definition?.attributes?.metadata?.list?.options,
+    definition?.attributes?.metadata?.list?.values,
+    definition?.attributes?.metadata?.allowedValues,
+    definition?.attributes?.metadata?.possibleValues,
+    definition?.attributes?.metadata?.permittedValues
+  ];
+
+  const values = candidates.find(Array.isArray) || [];
+
+  return values.map(option => {
+    const id = typeof option === 'object'
+      ? firstNonEmpty(option?.id, option?.value, option?.key)
+      : option;
+    const name = typeof option === 'object'
+      ? firstNonEmpty(option?.title, option?.name, option?.label, option?.displayName, option?.value, id)
+      : option;
+
+    if (!id || !name) return null;
+
+    return {
+      id: String(id),
+      name: String(name)
+    };
+  }).filter(Boolean);
+}
+
+function buildCustomAttributeDefinitions(definitions) {
+  return definitions.map(definition => {
+    const id = firstNonEmpty(
+      definition?.id,
+      definition?.attributeDefinitionId,
+      definition?.attributes?.id,
+      definition?.attributes?.attributeDefinitionId
+    );
+
+    const title = firstNonEmpty(
+      definition?.title,
+      definition?.name,
+      definition?.displayName,
+      definition?.attributes?.title,
+      definition?.attributes?.name,
+      definition?.attributes?.displayName
+    );
+
+    if (!id || !title) return null;
+
+    return {
+      id: String(id),
+      title: String(title),
+      type: firstNonEmpty(
+        definition?.type,
+        definition?.dataType,
+        definition?.fieldType,
+        definition?.customFieldType,
+        definition?.metadata?.type,
+        definition?.metadata?.dataType,
+        definition?.attributes?.type,
+        definition?.attributes?.dataType,
+        definition?.attributes?.fieldType,
+        definition?.attributes?.customFieldType,
+        definition?.attributes?.metadata?.type,
+        definition?.attributes?.metadata?.dataType,
+        'text'
+      ),
+      options: getCustomAttributeOptions(definition),
+      raw: definition
+    };
+  }).filter(Boolean);
+}
+
+async function buildIssueSettings(req, accProjectId, accAccountId) {
+  const users = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/admin/v1/projects/${encodeURIComponent(accProjectId)}/users?limit=100`,
+    'project users'
+  );
+
+  const companies = accAccountId
+    ? await fetchAllPagesFlexibleTwoLegged(
+      `${APS_API_BASE}/hq/v1/accounts/${encodeURIComponent(accAccountId)}/projects/${encodeURIComponent(accProjectId)}/companies`,
+      'HQ project companies'
+    )
+    : [];
+
+  const roles = accAccountId
+    ? await fetchAllPagesFlexibleTwoLegged(
+      `${APS_API_BASE}/hq/v2/accounts/${encodeURIComponent(accAccountId)}/projects/${encodeURIComponent(accProjectId)}/industry_roles`,
+      'HQ project industry roles'
+    )
+    : [];
+
+  const issueTypes = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issue-types?limit=100&include=subtypes`,
+    'issue types'
+  );
+
+  const issueSubtypes = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issue-subtypes?limit=100`,
+    'issue subtypes'
+  );
+
+  const rootCauseCategories = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issue-root-cause-categories?limit=100&include=rootcauses`,
+    'root cause categories'
+  );
+
+  const rootCauses = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/root-causes?limit=100`,
+    'root causes'
+  );
+
+  const customAttributeDefinitions = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issue-attribute-definitions?limit=100`,
+    'custom attribute definitions'
+  );
+
+  const customAttributeMappings = await fetchAllPagesFlexible(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issue-attribute-mappings?limit=100`,
+    'custom attribute mappings'
+  );
+
+  const userProfile = await apsFetchOptional(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/users/me`,
+    'issue user profile'
+  );
+
+  const assignees = uniqueOptions([
+    ...users.map(user => makeOption(user, 'user', 'User')),
+    ...companies.map(company => makeOption(company, 'company', 'Company')),
+    ...buildProjectRoleOptions(users, roles)
+  ]);
+
+  return {
+    projectId: accProjectId,
+    accountId: accAccountId || null,
+    statuses: ['draft', 'open', 'pending', 'in_review', 'closed'],
+    assignees,
+    issueTypes: issueTypes.map(type => ({
+      id: String(getIssueTypeId(type) || ''),
+      name: String(getIssueTypeName(type) || ''),
+      categoryName: String(getIssueTypeCategory(type) || '')
+    })).filter(type => type.id && type.name),
+    issueSubtypes: buildIssueTypeOptions(issueTypes, issueSubtypes),
+    rootCauses: buildRootCauseOptions(rootCauseCategories, rootCauses),
+    customAttributeDefinitions: buildCustomAttributeDefinitions(customAttributeDefinitions),
+    customAttributeMappings,
+    userProfile
+  };
+}
+
+async function fetchIssueById(req, accProjectId, issueId) {
+  const body = await apsFetch(
+    req,
+    `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issues/${encodeURIComponent(issueId)}`
+  );
+
+  return body?.data || body?.issue || body;
+}
+
+async function enrichSingleIssue(req, accProjectId, accAccountId, issue) {
+  const maps = await buildProjectLookupMaps(req, accProjectId, accAccountId, [issue]);
+  return enrichIssue(issue, maps);
+}
+
+const PATCHABLE_ISSUE_ATTRIBUTES = new Set([
+  'title',
+  'description',
+  'issueTypeId',
+  'issueSubtypeId',
+  'status',
+  'assignedTo',
+  'assignedToType',
+  'dueDate',
+  'startDate',
+  'locationId',
+  'locationDetails',
+  'rootCauseId',
+  'officialResponse',
+  'customAttributes',
+  'published',
+  'watchers',
+  'watcherObjects',
+  'gpsCoordinates'
+]);
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function nullableString(value) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  return String(value);
+}
+
+function normaliseCustomAttributes(value) {
+  if (!Array.isArray(value)) return undefined;
+
+  return value
+    .map(attribute => {
+      const attributeDefinitionId = firstNonEmpty(
+        attribute?.attributeDefinitionId,
+        attribute?.id
+      );
+
+      if (!attributeDefinitionId) return null;
+
+      return {
+        attributeDefinitionId: String(attributeDefinitionId),
+        value: attribute?.value === undefined || attribute?.value === '' ? null : attribute.value
+      };
+    })
+    .filter(Boolean);
+}
+
+function normaliseWatcherObjects(value) {
+  if (!Array.isArray(value)) return undefined;
+
+  return value
+    .map(watcher => {
+      const id = firstNonEmpty(watcher?.id, watcher?.value);
+      const type = firstNonEmpty(watcher?.type, watcher?.assignedToType);
+
+      if (!id || !type) return null;
+
+      return {
+        id: String(id),
+        type: String(type)
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildIssuePatchPayload(input, currentIssue) {
+  const source = input?.updates && typeof input.updates === 'object'
+    ? input.updates
+    : input || {};
+
+  const permittedAttributes = new Set(
+    Array.isArray(currentIssue?.permittedAttributes)
+      ? currentIssue.permittedAttributes
+      : []
+  );
+
+  const permittedStatuses = new Set(
+    Array.isArray(currentIssue?.permittedStatuses)
+      ? currentIssue.permittedStatuses
+      : []
+  );
+
+  const payload = {};
+
+  PATCHABLE_ISSUE_ATTRIBUTES.forEach(attribute => {
+    if (!hasOwn(source, attribute)) return;
+
+    if (permittedAttributes.size > 0 && !permittedAttributes.has(attribute)) {
+      return;
+    }
+
+    const value = source[attribute];
+
+    if (['title', 'description', 'status', 'assignedTo', 'assignedToType', 'dueDate', 'startDate', 'locationId', 'locationDetails', 'rootCauseId', 'officialResponse', 'issueTypeId', 'issueSubtypeId'].includes(attribute)) {
+      const cleanValue = nullableString(value);
+
+      if (attribute === 'status' && cleanValue && permittedStatuses.size > 0 && !permittedStatuses.has(cleanValue)) {
+        return;
+      }
+
+      payload[attribute] = cleanValue;
+      return;
+    }
+
+    if (attribute === 'published') {
+      payload.published = value === true || value === 'true';
+      return;
+    }
+
+    if (attribute === 'customAttributes') {
+      const customAttributes = normaliseCustomAttributes(value);
+      if (customAttributes) payload.customAttributes = customAttributes;
+      return;
+    }
+
+    if (attribute === 'watcherObjects') {
+      const watcherObjects = normaliseWatcherObjects(value);
+      if (watcherObjects) payload.watcherObjects = watcherObjects;
+      return;
+    }
+
+    if (attribute === 'watchers') {
+      payload.watchers = Array.isArray(value) ? value.map(String) : [];
+      return;
+    }
+
+    payload[attribute] = value;
+  });
+
+  return payload;
+}
+
+router.get('/api/projects/:projectId/issues/settings', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const accAccountId = getAccountIdFromRequest(req);
+    const settings = await buildIssueSettings(req, accProjectId, accAccountId);
+
+    res.json(settings);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/api/projects/:projectId/issues/:issueId', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const accAccountId = getAccountIdFromRequest(req);
+    const issue = await fetchIssueById(req, accProjectId, req.params.issueId);
+    const enrichedIssue = await enrichSingleIssue(req, accProjectId, accAccountId, issue);
+
+    res.json({
+      data: enrichedIssue
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/api/projects/:projectId/issues/:issueId/thumbnail', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const issue = await fetchIssueById(req, accProjectId, req.params.issueId);
+    const snapshotUrn = getIssueSnapshotUrn(issue);
+    const objectInfo = parseOssObjectUrn(snapshotUrn);
+
+    if (!objectInfo) {
+      return res.status(404).json({
+        error: 'Issue thumbnail is not available.'
+      });
+    }
+
+    const downloadUrl = await getSignedObjectDownloadUrl(req, objectInfo);
+
+    if (!downloadUrl) {
+      return res.status(404).json({
+        error: 'Issue thumbnail download URL is not available.'
+      });
+    }
+
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.redirect(downloadUrl);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/api/projects/:projectId/issues/:issueId', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const accAccountId = getAccountIdFromRequest(req);
+    const issueId = req.params.issueId;
+    const currentIssue = await fetchIssueById(req, accProjectId, issueId);
+    const payload = buildIssuePatchPayload(req.body, currentIssue);
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({
+        error: 'No permitted issue fields were supplied for update.'
+      });
+    }
+
+    const patchedBody = await apsFetch(
+      req,
+      `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issues/${encodeURIComponent(issueId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const patchedIssue = patchedBody?.data || patchedBody?.issue || patchedBody;
+    const freshIssue = patchedIssue && Object.keys(patchedIssue).length > 0
+      ? patchedIssue
+      : await fetchIssueById(req, accProjectId, issueId);
+
+    const enrichedIssue = await enrichSingleIssue(req, accProjectId, accAccountId, freshIssue);
+
+    res.json({
+      data: enrichedIssue,
+      patched: Object.keys(payload)
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/api/projects/:projectId/issues/:issueId/comments', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const comments = await fetchAllPagesFlexible(
+      req,
+      `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issues/${encodeURIComponent(req.params.issueId)}/comments?limit=100`,
+      'issue comments'
+    );
+    const identityMap = await buildProjectIdentityMap(req, accProjectId);
+    const enrichedComments = comments.map(comment => enrichComment(comment, identityMap));
+
+    res.json({
+      data: enrichedComments,
+      count: enrichedComments.length
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/api/projects/:projectId/issues/:issueId/comments', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const issueId = req.params.issueId;
+    const commentBody = String(req.body?.body || '').trim();
+
+    if (!commentBody) {
+      return res.status(400).json({
+        error: 'Comment text is required.'
+      });
+    }
+
+    const comment = await apsFetch(
+      req,
+      `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/issues/${encodeURIComponent(issueId)}/comments`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          issueId,
+          body: commentBody
+        })
+      }
+    );
+    const identityMap = await buildProjectIdentityMap(req, accProjectId);
+    const enrichedComment = enrichComment(comment?.data || comment?.comment || comment, identityMap);
+
+    res.json({
+      data: enrichedComment
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/api/projects/:projectId/issues/:issueId/attachments', requireAuth, async function (req, res, next) {
+  try {
+    const accProjectId = projectGuid(req.params.projectId);
+    const attachments = await fetchAllPagesFlexible(
+      req,
+      `${APS_API_BASE}/construction/issues/v1/projects/${encodeURIComponent(accProjectId)}/attachments/${encodeURIComponent(req.params.issueId)}/items?limit=100`,
+      'issue attachments'
+    );
+
+    res.json({
+      data: attachments,
+      count: attachments.length
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 
 router.get('/api/debug/hq-project-companies', requireAuth, async function (req, res, next) {

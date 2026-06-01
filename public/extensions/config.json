@@ -1,0 +1,39 @@
+{
+  "Extensions": [
+    {
+      "name": "AccIssuePins",
+      "displayname": "ACC Issue Pins",
+      "description": "Loads ACC issues for the active project and draws issue pins inside the APS Viewer.",
+      "loadonstartup": "true",
+      "includeinlist": "false",
+      "editoptions": "false",
+      "filestoload": {
+        "jsfiles": [
+          "main.js"
+        ],
+        "cssfiles": [
+          "main.css"
+        ]
+      },
+      "options": {}
+    },
+    {
+      "name": "SwitchbackToRevit",
+      "extensionId": "RevitSwitchback",
+      "displayname": "Switchback To Revit",
+      "description": "Writes the current viewer camera and section state for Revit switchback.",
+      "loadonstartup": "true",
+      "includeinlist": "false",
+      "editoptions": "false",
+      "filestoload": {
+        "jsfiles": [
+          "main.js"
+        ],
+        "cssfiles": [
+          "main.css"
+        ]
+      },
+      "options": {}
+    }
+  ]
+}

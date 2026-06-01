@@ -4,11 +4,58 @@
 }
 
 .switchback-to-revit-button .adsk-button-icon::before {
-  content: "↩";
+  content: "R";
   color: #ffffff;
   font-size: 21px;
   font-weight: 700;
   position: absolute;
   left: 8px;
   top: 3px;
+}
+
+.switchback-to-revit-button-disabled {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.switchback-to-revit-button-disabled .adsk-button-icon::before {
+  color: #cbd5e1;
+}
+
+.switchback-to-revit-button-working {
+  animation: switchbackButtonPulse 0.7s ease-out;
+}
+
+.switchback-to-revit-toast {
+  left: 50%;
+  right: auto;
+  bottom: 86px;
+  max-width: min(520px, calc(100% - 48px));
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.switchback-to-revit-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.switchback-to-revit-toast.failed {
+  background: rgba(185, 28, 28, 0.95);
+}
+
+@keyframes switchbackButtonPulse {
+  0% {
+    transform: scale(1);
+  }
+
+  40% {
+    transform: scale(1.08);
+  }
+
+  100% {
+    transform: scale(1);
+  }
 }

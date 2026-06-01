@@ -1,113 +1,77 @@
-/////////////////////////////////////////////////////////////////////
-// Resizable, collapsible layout controls, stable issue panel, issue filters
-/////////////////////////////////////////////////////////////////////
-
+// Coordinates the right-side issue UI: filters, issue table, issue details, and panel buttons.
+// Do not put Autodesk Viewer loading code here; use ApsViewer.js for viewer behavior.
 (function () {
   var currentIssueDetail = null;
   var loadedIssues = [];
   var selectedIssueTableId = null;
+  var issueSettingsCache = null;
+  var issueSettingsCacheKey = '';
+  var activeIssueEditField = null;
+  var currentIssueTab = 'details';
+  var currentIssueComments = [];
   var currentIssueFilters = {
     category: '',
     type: '',
     statuses: ['draft', 'open', 'pending', 'in review', 'closed'],
     assignedTo: ''
   };
-
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
+  var issueTableBaseColumns = [
+    { key: 'displayId', label: 'ID', type: 'text', placeholder: 'Issue ID contains' },
+    { key: 'title', label: 'Title', type: 'text', placeholder: 'Title contains' },
+    { key: 'status', label: 'Status', type: 'status' },
+    { key: 'assignedTo', label: 'Assigned to', type: 'values', searchable: true },
+    { key: 'dueDate', label: 'Due date', type: 'date' },
+    { key: 'createdBy', label: 'Created by', type: 'values', searchable: true }
+  ];
+  var issueTableCustomColumnIds = [];
+  var issueTableColumnWidths = {};
+  var issueTableColumnOrder = [];
+  var issueTableColumnOrderKey = '';
+  var issueTableState = {
+    sortKey: '',
+    sortDirection: 'asc',
+    filters: {},
+    textFilters: {},
+    dateFilters: {},
+    numberFilters: {},
+    openColumnKey: '',
+    searchText: '',
+    customColumnMenuOpen: false,
+    resizingColumn: null,
+    draggingColumn: null
+  };
+  var escapeHtml = window.HtmlUtils.escapeHtml;
+  var escapeAttribute = window.HtmlUtils.escapeAttribute;
+  var setElementText = window.HtmlUtils.setElementText;
+  var isRawAutodeskId = window.TextUtils.isRawAutodeskId;
+  var text = window.TextUtils.text;
+  var getDisplayName = window.TextUtils.getDisplayName;
+  var normalise = window.TextUtils.normalise;
+  var uniqueValues = window.TextUtils.uniqueValues;
+  var getInitials = window.TextUtils.getInitials;
+  var stripProjectPrefix = window.TextUtils.stripProjectPrefix;
+  var cleanRoleName = window.TextUtils.cleanRoleName;
+  var cleanAssigneeName = window.TextUtils.cleanAssigneeName;
+  var formatDate = window.DateUtils.formatDate;
+  var formatIssueDate = window.DateUtils.formatIssueDate;
+  var toDateInputValue = window.DateUtils.toDateInputValue;
+  var formatRelativeTime = window.DateUtils.formatRelativeTime;
 
   function setStatus(text) {
     var status = document.getElementById('viewerActionStatus');
     if (status) status.textContent = text;
   }
 
-  function isRawAutodeskId(value) {
-    if (!value || typeof value !== 'string') return false;
+  function isPlaceholderName(value) {
+    var clean = normalise(value);
 
-    var trimmed = value.trim();
-
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return true;
-    if (/^[0-9a-f]{24}$/i.test(trimmed)) return true;
-    if (/^[0-9]{5,}$/.test(trimmed)) return true;
-    if (/^[A-Z0-9]{12,24}$/i.test(trimmed) && !trimmed.includes('@') && !trimmed.includes(' ')) return true;
-    if (trimmed.startsWith('urn:')) return true;
-    if (trimmed.startsWith('b.')) return true;
-
-    return false;
-  }
-
-  function text(value, fallback) {
-    if (value === undefined || value === null || value === '') return fallback || '-';
-
-    if (typeof value === 'object') {
-      return getDisplayName(value, fallback || '-');
-    }
-
-    var stringValue = String(value);
-
-    if (isRawAutodeskId(stringValue)) {
-      return fallback || 'Unresolved name';
-    }
-
-    return stringValue;
-  }
-
-
-  function escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  function escapeAttribute(value) {
-    return escapeHtml(value).replace(/`/g, '&#096;');
-  }
-
-  function setElementText(id, value, fallback) {
-    var element = document.getElementById(id);
-    if (element) element.textContent = text(value, fallback);
-  }
-
-  function getDisplayName(value, fallback) {
-    if (!value) return fallback || '-';
-
-    if (typeof value === 'string') {
-      return isRawAutodeskId(value) ? (fallback || 'Unresolved name') : value;
-    }
-
-    if (typeof value !== 'object') {
-      return String(value);
-    }
-
-    var name =
-      value.name ||
-      value.displayName ||
-      value.fullName ||
-      value.email ||
-      value.title ||
-      value.label ||
-      value.companyName ||
-      value.roleName ||
-      value.attributes?.name ||
-      value.attributes?.displayName ||
-      value.attributes?.email ||
-      value.attributes?.title ||
-      value.user?.name ||
-      value.user?.displayName ||
-      value.user?.email ||
-      value.company?.name ||
-      value.company?.displayName ||
-      value.role?.name ||
-      value.role?.displayName ||
-      null;
-
-    if (name) return String(name);
-
-    return fallback || '-';
+    return !clean ||
+      clean === '-' ||
+      clean === 'user' ||
+      clean === 'unknown' ||
+      clean === 'unknown user' ||
+      clean === 'unresolved user' ||
+      isRawAutodeskId(String(value || ''));
   }
 
   function getIssueId(issue, summary) {
@@ -232,7 +196,47 @@
     if (assignedType.includes('company')) fallback = 'Unresolved company';
     if (assignedType.includes('role')) fallback = 'Unresolved role';
 
-    return getDisplayName(assignedValue, fallback);
+    return cleanAssigneeName(getDisplayName(assignedValue, fallback), assignedType);
+  }
+
+  function getAssigneeOptionName(assignee) {
+    return cleanAssigneeName(assignee?.name || assignee?.label || assignee?.id || '', assignee?.type);
+  }
+
+  function getIssueSnapshotUrn(issue) {
+    return (
+      issue?.snapshotUrn ||
+      issue?.attributes?.snapshotUrn ||
+      issue?.snapshot?.urn ||
+      issue?.attributes?.snapshot?.urn ||
+      ''
+    );
+  }
+
+  function getIssueSnapshotDataUrl(issue) {
+    var snapshot = String(getIssueSnapshotUrn(issue) || '').trim();
+
+    if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(snapshot)) {
+      return snapshot;
+    }
+
+    if (!snapshot || snapshot.startsWith('urn:') || snapshot.startsWith('http')) {
+      return '';
+    }
+
+    var clean = snapshot.replace(/\s/g, '');
+    var imageType = '';
+
+    if (clean.startsWith('/9j/')) imageType = 'jpeg';
+    if (clean.startsWith('iVBOR')) imageType = 'png';
+    if (clean.startsWith('R0lGOD')) imageType = 'gif';
+    if (clean.startsWith('UklGR')) imageType = 'webp';
+
+    if (!imageType || !/^[A-Za-z0-9+/=_-]{80,}$/.test(clean)) {
+      return '';
+    }
+
+    return 'data:image/' + imageType + ';base64,' + clean.replace(/-/g, '+').replace(/_/g, '/');
   }
 
   function getOpenedBy(issue) {
@@ -261,24 +265,6 @@
     return getDisplayName(value, 'Unresolved user');
   }
 
-  function formatDate(value) {
-    if (!value) return '-';
-
-    var date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-      return text(value, '-');
-    }
-
-    return date.toLocaleString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
-
   function getDueDate(issue) {
     return issue?.dueDate || issue?.attributes?.dueDate || issue?.details?.dueDate || '';
   }
@@ -293,21 +279,6 @@
 
   function getUpdatedAt(issue) {
     return issue?.updatedAt || issue?.attributes?.updatedAt || '';
-  }
-
-  function getLocation(issue) {
-    var locationValue =
-      issue?.locationName ||
-      issue?.locationDetails ||
-      issue?.location ||
-      issue?.attributes?.locationName ||
-      issue?.attributes?.locationDetails ||
-      issue?.attributes?.location ||
-      '';
-
-    if (!locationValue) return '-';
-
-    return getDisplayName(locationValue, '-');
   }
 
   function getRootCause(issue) {
@@ -327,6 +298,8 @@
     var value = String(status || '').toLowerCase();
 
     if (value.includes('closed')) return 'closed';
+    if (value.includes('pending')) return 'pending';
+    if (value.includes('review')) return 'in-review';
     if (value.includes('answered')) return 'answered';
     if (value.includes('void')) return 'void';
     if (value.includes('draft')) return 'draft';
@@ -334,858 +307,1528 @@
     return 'open';
   }
 
-  function normalise(value) {
-    return String(value || '').trim().toLowerCase();
+  function getIssueTableColumn(key) {
+    return getIssueTableColumns().find(function (column) {
+      return column.key === key;
+    }) || null;
   }
 
-  function uniqueValues(values) {
-    var set = new Set();
+  function getIssueTableColumns() {
+    var customColumns = getSelectedCustomAttributeDefinitions().map(function (definition) {
+      return {
+        key: getCustomAttributeColumnKey(definition.id),
+        label: definition.title,
+        type: getCustomAttributeTableType(definition),
+        searchable: true,
+        customAttributeId: definition.id,
+        placeholder: definition.title + ' contains'
+      };
+    });
 
-    values.forEach(function (value) {
-      var clean = text(value, '').trim();
-      if (clean && clean !== '-' && !isRawAutodeskId(clean)) {
-        set.add(clean);
+    return applyIssueTableColumnOrder(issueTableBaseColumns.concat(customColumns));
+  }
+
+  function getIssueTableColumnOrderStorageKey() {
+    return 'acc-issue-table-column-order:' + (getCurrentProjectId() || 'default');
+  }
+
+  function ensureIssueTableColumnOrderLoaded() {
+    var key = getIssueTableColumnOrderStorageKey();
+    if (issueTableColumnOrderKey === key) return;
+
+    issueTableColumnOrderKey = key;
+
+    try {
+      var storedOrder = JSON.parse(localStorage.getItem(key) || '[]');
+      issueTableColumnOrder = Array.isArray(storedOrder)
+        ? storedOrder.map(String)
+        : [];
+    } catch (error) {
+      issueTableColumnOrder = [];
+    }
+  }
+
+  function saveIssueTableColumnOrder() {
+    ensureIssueTableColumnOrderLoaded();
+    localStorage.setItem(issueTableColumnOrderKey, JSON.stringify(issueTableColumnOrder));
+  }
+
+  function applyIssueTableColumnOrder(columns) {
+    ensureIssueTableColumnOrderLoaded();
+
+    if (!issueTableColumnOrder.length) return columns;
+
+    var columnsByKey = {};
+    var orderedColumns = [];
+
+    columns.forEach(function (column) {
+      columnsByKey[column.key] = column;
+    });
+
+    issueTableColumnOrder.forEach(function (columnKey) {
+      if (!columnsByKey[columnKey]) return;
+
+      orderedColumns.push(columnsByKey[columnKey]);
+      delete columnsByKey[columnKey];
+    });
+
+    columns.forEach(function (column) {
+      if (columnsByKey[column.key]) orderedColumns.push(column);
+    });
+
+    return orderedColumns;
+  }
+
+  function moveIssueTableColumn(draggedColumnKey, targetColumnKey, placeAfterTarget) {
+    if (!draggedColumnKey || !targetColumnKey || draggedColumnKey === targetColumnKey) return false;
+
+    var columnKeys = getIssueTableColumns().map(function (column) {
+      return column.key;
+    });
+    var draggedIndex = columnKeys.indexOf(draggedColumnKey);
+    var targetIndex = columnKeys.indexOf(targetColumnKey);
+
+    if (draggedIndex === -1 || targetIndex === -1) return false;
+
+    columnKeys.splice(draggedIndex, 1);
+    targetIndex = columnKeys.indexOf(targetColumnKey);
+    columnKeys.splice(placeAfterTarget ? targetIndex + 1 : targetIndex, 0, draggedColumnKey);
+
+    issueTableColumnOrder = columnKeys;
+    saveIssueTableColumnOrder();
+
+    return true;
+  }
+
+  function getIssueTableColumnWidthKey(columnKey) {
+    return 'acc-issue-table-column-width:' + (getCurrentProjectId() || 'default') + ':' + columnKey;
+  }
+
+  function getIssueTableColumnWidth(columnKey) {
+    if (issueTableColumnWidths[columnKey]) {
+      return issueTableColumnWidths[columnKey];
+    }
+
+    var storedWidth = Number(localStorage.getItem(getIssueTableColumnWidthKey(columnKey)) || 0);
+    if (Number.isFinite(storedWidth) && storedWidth > 0) {
+      issueTableColumnWidths[columnKey] = storedWidth;
+      return storedWidth;
+    }
+
+    return null;
+  }
+
+  function setIssueTableColumnWidth(columnKey, width) {
+    var cleanWidth = Math.max(56, Math.round(Number(width) || 0));
+
+    issueTableColumnWidths[columnKey] = cleanWidth;
+    localStorage.setItem(getIssueTableColumnWidthKey(columnKey), String(cleanWidth));
+  }
+
+  function clearIssueTableColumnWidths() {
+    issueTableColumnWidths = {};
+  }
+
+  function refreshIssuesFromAcc() {
+    setStatus('Refreshing issues from ACC/Forma...');
+
+    if (typeof window.accIssuePinsReload === 'function') {
+      var result = window.accIssuePinsReload({ refreshIssueSettings: true });
+
+      if (result && typeof result.then === 'function') {
+        result.then(function () {
+          setStatus('Issues refreshed from ACC/Forma.');
+        }).catch(function (error) {
+          setStatus('Issue refresh failed: ' + error.message);
+        });
       }
-    });
 
-    return Array.from(set).sort(function (a, b) {
-      return a.localeCompare(b);
+      return;
+    }
+
+    setStatus('Load a model first. Issue refresh is not ready yet.');
+  }
+
+  function getCustomAttributeColumnKey(attributeDefinitionId) {
+    return 'customAttribute:' + String(attributeDefinitionId || '');
+  }
+
+  function getCustomAttributeIdFromColumnKey(key) {
+    return String(key || '').startsWith('customAttribute:')
+      ? String(key).substring('customAttribute:'.length)
+      : '';
+  }
+
+  function getSelectedCustomAttributeDefinitions() {
+    var definitions = issueSettingsCache?.customAttributeDefinitions || [];
+
+    return issueTableCustomColumnIds.map(function (definitionId) {
+      return getCustomAttributeDefinition(issueSettingsCache, definitionId);
+    }).filter(function (definition) {
+      return definition && definitions.some(function (item) {
+        return String(item.id) === String(definition.id);
+      });
     });
   }
 
-
-  function generateSixDigitOtp() {
-    if (window.crypto && window.crypto.getRandomValues) {
-      var array = new Uint32Array(1);
-      window.crypto.getRandomValues(array);
-      return String(100000 + (array[0] % 900000));
-    }
-
-    return String(Math.floor(100000 + Math.random() * 900000));
+  function getIssueTableCustomColumnsStorageKey() {
+    return 'acc-issue-table-custom-columns:' + (getCurrentProjectId() || 'default');
   }
 
-  function getOrCreateRevitConnectionOtp(forceNew) {
-    var now = Date.now();
-    var maxAgeMs = 12 * 60 * 60 * 1000;
-    var otp = localStorage.getItem('acc-switchback-revit-otp') || '';
-    var createdAt = Number(localStorage.getItem('acc-switchback-revit-otp-created-at') || 0);
-    var expiresAt = Number(localStorage.getItem('acc-switchback-revit-otp-expires-at') || 0);
+  function loadIssueTableCustomColumnIds() {
+    try {
+      var raw = localStorage.getItem(getIssueTableCustomColumnsStorageKey());
+      var ids = JSON.parse(raw || '[]');
 
-    if (
-      forceNew ||
-      !/^\d{6}$/.test(otp) ||
-      !createdAt ||
-      !expiresAt ||
-      now >= expiresAt ||
-      now - createdAt > maxAgeMs
-    ) {
-      otp = generateSixDigitOtp();
-      createdAt = now;
-      expiresAt = now + maxAgeMs;
-
-      localStorage.setItem('acc-switchback-revit-otp', otp);
-      localStorage.setItem('acc-switchback-revit-otp-created-at', String(createdAt));
-      localStorage.setItem('acc-switchback-revit-otp-expires-at', String(expiresAt));
+      issueTableCustomColumnIds = Array.isArray(ids)
+        ? ids.map(String)
+        : [];
+    } catch (error) {
+      issueTableCustomColumnIds = [];
     }
+  }
+
+  function saveIssueTableCustomColumnIds() {
+    localStorage.setItem(
+      getIssueTableCustomColumnsStorageKey(),
+      JSON.stringify(issueTableCustomColumnIds)
+    );
+  }
+
+  function setIssueTableCustomColumn(attributeDefinitionId, visible) {
+    var id = String(attributeDefinitionId || '');
+    if (!id) return;
+
+    if (visible && issueTableCustomColumnIds.indexOf(id) === -1) {
+      issueTableCustomColumnIds.push(id);
+    }
+
+    if (!visible) {
+      issueTableCustomColumnIds = issueTableCustomColumnIds.filter(function (item) {
+        return item !== id;
+      });
+
+      var key = getCustomAttributeColumnKey(id);
+      delete issueTableState.filters[key];
+      delete issueTableState.textFilters[key];
+      delete issueTableState.dateFilters[key];
+      delete issueTableState.numberFilters[key];
+
+      if (issueTableState.sortKey === key) {
+        issueTableState.sortKey = '';
+        issueTableState.sortDirection = 'asc';
+      }
+    }
+
+    saveIssueTableCustomColumnIds();
+  }
+
+  function getCustomAttributeTableType(definition) {
+    var type = normalise(definition?.type || '');
+
+    if (type.includes('number') || type.includes('numeric') || type.includes('integer')) return 'number';
+    if (type.includes('drop') || type.includes('list') || type.includes('select')) return 'values';
+
+    return 'text';
+  }
+
+  function getIssueTableValue(issue, key) {
+    var customAttributeId = getCustomAttributeIdFromColumnKey(key);
+    if (customAttributeId) {
+      return getIssueCustomAttributeTableValue(issue, customAttributeId);
+    }
+
+    if (key === 'displayId') return text(getIssueDisplayId(issue, {}), '-');
+    if (key === 'title') return text(getIssueTitle(issue, {}), '-');
+    if (key === 'status') return formatStatusLabel(getIssueStatus(issue, {}));
+    if (key === 'assignedTo') return getAssignedTo(issue, {});
+    if (key === 'dueDate') return formatDate(getDueDate(issue));
+    if (key === 'createdBy') return getOpenedBy(issue);
+
+    return '-';
+  }
+
+  function getIssueCustomAttributeTableValue(issue, attributeDefinitionId) {
+    var attribute = getIssueCustomAttribute(issue, attributeDefinitionId);
+    var definition = getCustomAttributeDefinition(issueSettingsCache, attributeDefinitionId);
+
+    if (!attribute) return '-';
+
+    return getCustomAttributeDisplayValue(attribute, issueSettingsCache, definition);
+  }
+
+  function getIssueTableOptionLabel(value) {
+    var label = String(value || '').trim();
+    return label && label !== '-' ? label : '(Blank)';
+  }
+
+  function getIssueTableOptionKey(value) {
+    return normalise(getIssueTableOptionLabel(value)) || '(blank)';
+  }
+
+  function getIssueTableColumnOptions(issues, key) {
+    var optionsByKey = {};
+
+    (issues || []).forEach(function (issue) {
+      var label = getIssueTableOptionLabel(getIssueTableValue(issue, key));
+      optionsByKey[getIssueTableOptionKey(label)] = label;
+    });
+
+    return Object.keys(optionsByKey).map(function (optionKey) {
+      return {
+        key: optionKey,
+        label: optionsByKey[optionKey]
+      };
+    }).sort(function (a, b) {
+      return a.label.localeCompare(b.label, undefined, { numeric: true });
+    });
+  }
+
+  function getIssueTableDateMs(issue, key) {
+    var customAttributeId = getCustomAttributeIdFromColumnKey(key);
+
+    if (customAttributeId) {
+      var customColumn = getIssueTableColumn(key);
+      if (customColumn?.type !== 'date') return null;
+
+      var customAttribute = getIssueCustomAttribute(issue, customAttributeId);
+      var customDate = new Date(customAttribute?.value || '');
+
+      return Number.isNaN(customDate.getTime()) ? null : customDate.getTime();
+    }
+
+    if (key !== 'dueDate') return null;
+
+    var value = getDueDate(issue);
+    var date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? null : date.getTime();
+  }
+
+  function getIssueTableNumberValue(issue, key) {
+    var customAttributeId = getCustomAttributeIdFromColumnKey(key);
+    if (!customAttributeId) return null;
+
+    var attribute = getIssueCustomAttribute(issue, customAttributeId);
+    var numberValue = Number(attribute?.value);
+
+    return Number.isFinite(numberValue) ? numberValue : null;
+  }
+
+  function dateInputToMs(value, endOfDay) {
+    if (!value) return null;
+
+    var date = new Date(value + (endOfDay ? 'T23:59:59.999' : 'T00:00:00'));
+    return Number.isNaN(date.getTime()) ? null : date.getTime();
+  }
+
+  function getIssueTableDateRange(issues, key) {
+    var dates = (issues || []).map(function (issue) {
+      return getIssueTableDateMs(issue, key);
+    }).filter(function (value) {
+      return value !== null;
+    }).sort(function (a, b) {
+      return a - b;
+    });
+
+    if (!dates.length) return null;
 
     return {
-      otp: otp,
-      createdAtUtc: new Date(createdAt).toISOString(),
-      expiresAtUtc: new Date(expiresAt).toISOString(),
-      validForMinutes: Math.max(0, Math.round((expiresAt - now) / 60000))
+      min: formatDateOnly(dates[0]),
+      max: formatDateOnly(dates[dates.length - 1])
     };
   }
 
-  function getSwitchbackOtpPayload() {
-    var otpInfo = getOrCreateRevitConnectionOtp(false);
+  function formatDateOnly(value) {
+    var date = new Date(value);
 
-    return {
-      otp: otpInfo.otp,
-      createdAtUtc: otpInfo.createdAtUtc,
-      expiresAtUtc: otpInfo.expiresAtUtc,
-      source: 'web-viewer',
-      purpose: 'authorise-revit-switchback-instance'
+    if (Number.isNaN(date.getTime())) return '';
+
+    var year = date.getFullYear();
+    var month = String(date.getMonth() + 1).padStart(2, '0');
+    var day = String(date.getDate()).padStart(2, '0');
+
+    return year + '-' + month + '-' + day;
+  }
+
+  function hasIssueTableFilter(key) {
+    var valueFilter = Array.isArray(issueTableState.filters[key]);
+    var textFilter = Boolean(String(issueTableState.textFilters[key] || '').trim());
+    var dateFilter = Boolean(issueTableState.dateFilters[key]?.from || issueTableState.dateFilters[key]?.to);
+    var numberFilter = Boolean(issueTableState.numberFilters[key]?.from || issueTableState.numberFilters[key]?.to);
+
+    return valueFilter || textFilter || dateFilter || numberFilter || false;
+  }
+
+  function issueMatchesTableFilters(issue) {
+    var valueFiltersMatch = Object.keys(issueTableState.filters).every(function (key) {
+      var selectedValues = issueTableState.filters[key];
+      if (!Array.isArray(selectedValues)) return true;
+
+      return selectedValues.indexOf(getIssueTableOptionKey(getIssueTableValue(issue, key))) !== -1;
+    });
+
+    var textFiltersMatch = Object.keys(issueTableState.textFilters).every(function (key) {
+      var filterValue = normalise(issueTableState.textFilters[key] || '');
+      if (!filterValue) return true;
+
+      return normalise(getIssueTableValue(issue, key)).includes(filterValue);
+    });
+
+    var dateFiltersMatch = Object.keys(issueTableState.dateFilters).every(function (key) {
+      var filter = issueTableState.dateFilters[key] || {};
+      var issueDate = getIssueTableDateMs(issue, key);
+      var from = dateInputToMs(filter.from, false);
+      var to = dateInputToMs(filter.to, true);
+
+      if (from === null && to === null) return true;
+      if (issueDate === null) return false;
+      if (from !== null && issueDate < from) return false;
+      if (to !== null && issueDate > to) return false;
+
+      return true;
+    });
+
+    var numberFiltersMatch = Object.keys(issueTableState.numberFilters).every(function (key) {
+      var filter = issueTableState.numberFilters[key] || {};
+      var issueNumber = getIssueTableNumberValue(issue, key);
+      var from = filter.from === '' || filter.from === undefined ? null : Number(filter.from);
+      var to = filter.to === '' || filter.to === undefined ? null : Number(filter.to);
+
+      if (from === null && to === null) return true;
+      if (issueNumber === null) return false;
+      if (Number.isFinite(from) && issueNumber < from) return false;
+      if (Number.isFinite(to) && issueNumber > to) return false;
+
+      return true;
+    });
+
+    return valueFiltersMatch && textFiltersMatch && dateFiltersMatch && numberFiltersMatch;
+  }
+
+  function getIssueTableSortValue(issue, key) {
+    var column = getIssueTableColumn(key);
+
+    if (column?.type === 'number') {
+      return getIssueTableNumberValue(issue, key) || 0;
+    }
+
+    if (key === 'dueDate') {
+      return getIssueTableDateMs(issue, key) || 0;
+    }
+
+    if (key === 'displayId') {
+      var numberValue = Number(String(getIssueTableValue(issue, key)).replace(/[^\d.-]/g, ''));
+      if (Number.isFinite(numberValue)) return numberValue;
+    }
+
+    return normalise(getIssueTableValue(issue, key));
+  }
+
+  function getIssueTableRows(issues) {
+    var rows = (issues || []).filter(issueMatchesTableFilters);
+
+    if (!issueTableState.sortKey) return rows;
+
+    var direction = issueTableState.sortDirection === 'desc' ? -1 : 1;
+    return rows.slice().sort(function (a, b) {
+      var aValue = getIssueTableSortValue(a, issueTableState.sortKey);
+      var bValue = getIssueTableSortValue(b, issueTableState.sortKey);
+
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return (aValue - bValue) * direction;
+      }
+
+      return String(aValue).localeCompare(String(bValue), undefined, { numeric: true }) * direction;
+    });
+  }
+
+  function getIssueViewType(issue) {
+    var linkedDocuments = Array.isArray(issue?.linkedDocuments)
+      ? issue.linkedDocuments
+      : Array.isArray(issue?.attributes?.linkedDocuments)
+        ? issue.attributes.linkedDocuments
+        : [];
+    var placements = Array.isArray(issue?.placements)
+      ? issue.placements
+      : Array.isArray(issue?.attributes?.placements)
+        ? issue.attributes.placements
+        : [];
+    var viewables = []
+      .concat(linkedDocuments.map(function (item) {
+        return item?.details?.viewable || item?.viewable || null;
+      }))
+      .concat(placements.map(function (item) {
+        return item?.details?.viewable || item?.viewable || null;
+      }))
+      .concat([
+        issue?.placement?.details?.viewable,
+        issue?.placement?.viewable,
+        issue?.attributes?.placement?.details?.viewable,
+        issue?.attributes?.placement?.viewable
+      ])
+      .filter(Boolean);
+
+    var is2d = viewables.some(function (viewable) {
+      var typeText = String(
+        viewable.role ||
+        viewable.type ||
+        viewable.viewType ||
+        viewable.data?.role ||
+        viewable.data?.type ||
+        viewable.data?.viewType ||
+        ''
+      ).toLowerCase();
+
+      return viewable.is3D === false ||
+        viewable.is2D === true ||
+        viewable.is2d === true ||
+        viewable.data?.is3D === false ||
+        viewable.data?.is2D === true ||
+        viewable.data?.is2d === true ||
+        typeText === '2d' ||
+        typeText === 'sheet' ||
+        typeText.includes('2d');
+    });
+
+    return is2d ? '2D' : '3D';
+  }
+
+  function renderIssueTableIdCell(issue, value, widthStyle) {
+    var viewType = getIssueViewType(issue);
+    var tagClass = viewType === '2D' ? 'two-d' : 'three-d';
+
+    return '' +
+      '<td' + widthStyle + '>' +
+        '<div class="issueTableIdCell" title="' + escapeAttribute(value + ' ' + viewType) + '">' +
+          '<span class="issueTableIdText">' + escapeHtml(value) + '</span>' +
+          '<span class="issueTableViewTypeTag ' + escapeAttribute(tagClass) + '">' + escapeHtml(viewType) + '</span>' +
+        '</div>' +
+      '</td>';
+  }
+
+  function renderIssueTableHead() {
+    var head = document.getElementById('issueTableHead');
+    if (!head) return;
+
+    head.innerHTML = getIssueTableColumns().map(function (column) {
+      var isSorted = issueTableState.sortKey === column.key;
+      var isFiltered = hasIssueTableFilter(column.key);
+      var classes = ['issueTableColumnButton'];
+      var sortMarker = '';
+      var width = getIssueTableColumnWidth(column.key);
+      var widthStyle = width ? ' style="width:' + width + 'px; min-width:' + width + 'px;"' : '';
+
+      if (isSorted) {
+        classes.push('sorted');
+        sortMarker = issueTableState.sortDirection === 'desc' ? 'Z-A' : 'A-Z';
+      }
+
+      if (isFiltered) classes.push('filtered');
+
+      return '<th data-issue-table-header="' + escapeAttribute(column.key) + '"' + widthStyle + '>' +
+        '<span class="issueTableColumnDragHandle" data-issue-table-drag="' + escapeAttribute(column.key) + '" title="Drag to reorder column"><span class="glyphicon glyphicon-option-vertical"></span></span>' +
+        '<button class="' + classes.join(' ') + '" type="button" data-issue-table-column="' + escapeAttribute(column.key) + '" aria-label="' + escapeAttribute(column.label + ' filter') + '">' +
+          '<span>' + escapeHtml(column.label) + '</span>' +
+          '<span class="issueTableColumnControls">' +
+            (sortMarker ? '<span class="issueTableSortMarker">' + escapeHtml(sortMarker) + '</span>' : '') +
+            '<span class="glyphicon glyphicon-filter issueTableColumnIcon" aria-hidden="true"></span>' +
+          '</span>' +
+        '</button>' +
+        '<span class="issueTableColumnResizeHandle" data-issue-table-resize="' + escapeAttribute(column.key) + '" title="Resize column"></span>' +
+      '</th>';
+    }).join('');
+  }
+
+  function renderIssueTableColumnMenu() {
+    var menu = document.getElementById('issueTableColumnMenu');
+    if (!menu) return;
+
+    var column = getIssueTableColumn(issueTableState.openColumnKey);
+    if (!column) {
+      menu.hidden = true;
+      menu.innerHTML = '';
+      return;
+    }
+
+    var options = getIssueTableColumnOptions(loadedIssues, column.key);
+    var selectedValues = hasIssueTableFilter(column.key) && Array.isArray(issueTableState.filters[column.key])
+      ? issueTableState.filters[column.key]
+      : options.map(function (option) { return option.key; });
+    var searchText = normalise(issueTableState.searchText);
+    var visibleOptions = column.searchable === false
+      ? options
+      : options.filter(function (option) {
+          return !searchText || normalise(option.label).includes(searchText);
+        });
+    var dateRange = column.type === 'date' ? getIssueTableDateRange(loadedIssues, column.key) : null;
+    var currentDateFilter = issueTableState.dateFilters[column.key] || {};
+    var currentNumberFilter = issueTableState.numberFilters[column.key] || {};
+    var currentTextFilter = issueTableState.textFilters[column.key] || '';
+    var sortHtml = column.type === 'status'
+      ? ''
+      : '<div class="issueTableMenuActions">' +
+          '<button type="button" data-issue-table-action="sort-asc">' + escapeHtml(column.type === 'date' ? 'Oldest first' : column.type === 'number' ? 'Smallest first' : 'Sort A to Z') + '</button>' +
+          '<button type="button" data-issue-table-action="sort-desc">' + escapeHtml(column.type === 'date' ? 'Newest first' : column.type === 'number' ? 'Largest first' : 'Sort Z to A') + '</button>' +
+          (issueTableState.sortKey === column.key ? '<button type="button" data-issue-table-action="clear-sort">Clear sort</button>' : '') +
+        '</div>';
+    var filterHtml = '';
+
+    if (column.type === 'text') {
+      filterHtml =
+        '<label class="issueTableMenuField">' +
+          '<span>Contains</span>' +
+          '<input class="issueTableTextFilterInput" type="search" placeholder="' + escapeAttribute(column.placeholder || 'Contains') + '" value="' + escapeAttribute(currentTextFilter) + '" data-issue-table-text-filter>' +
+        '</label>';
+    } else if (column.type === 'date') {
+      filterHtml =
+        (dateRange ? '<div class="issueTableMenuHint">Issue dates: ' + escapeHtml(dateRange.min) + ' to ' + escapeHtml(dateRange.max) + '</div>' : '') +
+        '<div class="issueTableDateRange">' +
+          '<label class="issueTableMenuField"><span>From</span><input type="date" value="' + escapeAttribute(currentDateFilter.from || '') + '" data-issue-table-date-filter="from"></label>' +
+          '<label class="issueTableMenuField"><span>To</span><input type="date" value="' + escapeAttribute(currentDateFilter.to || '') + '" data-issue-table-date-filter="to"></label>' +
+        '</div>';
+    } else if (column.type === 'number') {
+      filterHtml =
+        '<div class="issueTableDateRange">' +
+          '<label class="issueTableMenuField"><span>Minimum</span><input type="number" value="' + escapeAttribute(currentNumberFilter.from || '') + '" data-issue-table-number-filter="from"></label>' +
+          '<label class="issueTableMenuField"><span>Maximum</span><input type="number" value="' + escapeAttribute(currentNumberFilter.to || '') + '" data-issue-table-number-filter="to"></label>' +
+        '</div>';
+    } else {
+      filterHtml =
+        (column.searchable ? '<input id="issueTableFilterSearch" class="issueTableFilterSearch" type="search" placeholder="Search values" value="' + escapeAttribute(issueTableState.searchText) + '">' : '') +
+        '<div class="issueTableMenuActions compact">' +
+          '<button type="button" data-issue-table-action="select-all">All</button>' +
+          '<button type="button" data-issue-table-action="clear-values">None</button>' +
+          '<button type="button" data-issue-table-action="reset-filter">Reset filter</button>' +
+        '</div>' +
+        '<div class="issueTableMenuOptions">' +
+          (
+            visibleOptions.length
+              ? visibleOptions.map(function (option) {
+                  var checked = selectedValues.indexOf(option.key) !== -1 ? ' checked' : '';
+                  var statusClassName = column.type === 'status' ? ' status-' + statusClass(option.label) : '';
+
+                  return '<label class="issueTableMenuOption' + escapeAttribute(statusClassName) + '">' +
+                    '<input type="checkbox" value="' + escapeAttribute(option.key) + '" data-issue-table-filter-value' + checked + '> ' +
+                    '<span class="issueTableOptionLabel">' + escapeHtml(option.label) + '</span>' +
+                  '</label>';
+                }).join('')
+              : '<div class="issueTableMenuEmpty">No matching values.</div>'
+          ) +
+        '</div>';
+    }
+
+    menu.hidden = false;
+    menu.setAttribute('data-issue-table-menu-key', column.key);
+    menu.innerHTML =
+      '<div class="issueTableMenuHeader">' +
+        '<div class="issueTableMenuTitle">' + escapeHtml(column.label) + '</div>' +
+        '<button class="issueTableMenuClose" type="button" data-issue-table-action="close">Close</button>' +
+      '</div>' +
+      sortHtml +
+      filterHtml +
+      ((column.type === 'text' || column.type === 'date' || column.type === 'number') ? '<div class="issueTableMenuActions compact"><button type="button" data-issue-table-action="reset-filter">Reset filter</button></div>' : '');
+
+    positionIssueTableColumnMenu(menu, column.key);
+  }
+
+  function positionIssueTableColumnMenu(menu, columnKey) {
+    var button = Array.from(document.querySelectorAll('[data-issue-table-column]')).find(function (item) {
+      return item.getAttribute('data-issue-table-column') === columnKey;
+    });
+
+    if (!button) return;
+
+    var rect = button.getBoundingClientRect();
+    var width = Math.min(320, window.innerWidth - 24);
+    var left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
+    var top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.style.width = width + 'px';
+    menu.style.maxHeight = Math.max(220, window.innerHeight - top - 12) + 'px';
+  }
+
+  function renderIssueTableCustomColumnsMenu() {
+    var menu = document.getElementById('issueTableCustomColumnsMenu');
+    if (!menu) return;
+
+    if (!issueTableState.customColumnMenuOpen) {
+      menu.hidden = true;
+      menu.innerHTML = '';
+      return;
+    }
+
+    var definitions = (issueSettingsCache?.customAttributeDefinitions || []).filter(function (definition) {
+      return definition?.id && definition?.title;
+    }).sort(function (a, b) {
+      return String(a.title).localeCompare(String(b.title), undefined, { numeric: true });
+    });
+
+    menu.hidden = false;
+    menu.innerHTML =
+      '<div class="issueTableMenuHeader">' +
+        '<div class="issueTableMenuTitle">Custom columns</div>' +
+        '<button class="issueTableMenuClose" type="button" data-issue-custom-columns-close>Close</button>' +
+      '</div>' +
+      (
+        definitions.length
+          ? '<div class="issueTableMenuOptions">' +
+              definitions.map(function (definition) {
+                var checked = issueTableCustomColumnIds.indexOf(String(definition.id)) !== -1 ? ' checked' : '';
+
+                return '<label class="issueTableMenuOption">' +
+                  '<input type="checkbox" value="' + escapeAttribute(definition.id) + '" data-issue-custom-column-toggle' + checked + '> ' +
+                  '<span class="issueTableOptionLabel">' + escapeHtml(definition.title) + '</span>' +
+                  '<span class="issueTableCustomColumnType">' + escapeHtml(getCustomAttributeTableType(definition)) + '</span>' +
+                '</label>';
+              }).join('') +
+            '</div>'
+          : '<div class="issueTableMenuEmpty">No custom attributes found in issue settings.</div>'
+      );
+
+    positionIssueTableCustomColumnsMenu(menu);
+  }
+
+  function positionIssueTableCustomColumnsMenu(menu) {
+    var button = document.getElementById('issueTableCustomColumnsButton');
+    if (!button) return;
+
+    var rect = button.getBoundingClientRect();
+    var width = Math.min(340, window.innerWidth - 24);
+    var left = Math.min(Math.max(12, rect.right - width), window.innerWidth - width - 12);
+    var top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.style.width = width + 'px';
+    menu.style.maxHeight = Math.max(240, window.innerHeight - top - 12) + 'px';
+  }
+
+  function setIssueTableFilterValue(key, valueKey, checked) {
+    var options = getIssueTableColumnOptions(loadedIssues, key);
+    var allValues = options.map(function (option) { return option.key; });
+    var selectedValues = hasIssueTableFilter(key)
+      ? issueTableState.filters[key].slice()
+      : allValues.slice();
+
+    if (checked && selectedValues.indexOf(valueKey) === -1) {
+      selectedValues.push(valueKey);
+    }
+
+    if (!checked) {
+      selectedValues = selectedValues.filter(function (item) {
+        return item !== valueKey;
+      });
+    }
+
+    if (selectedValues.length === allValues.length) {
+      delete issueTableState.filters[key];
+    } else {
+      issueTableState.filters[key] = selectedValues;
+    }
+  }
+
+  function setIssueTableTextFilter(key, value) {
+    var clean = String(value || '').trim();
+
+    if (clean) {
+      issueTableState.textFilters[key] = clean;
+    } else {
+      delete issueTableState.textFilters[key];
+    }
+  }
+
+  function setIssueTableDateFilter(key, part, value) {
+    var filter = issueTableState.dateFilters[key] || {};
+
+    if (value) {
+      filter[part] = value;
+    } else {
+      delete filter[part];
+    }
+
+    if (filter.from || filter.to) {
+      issueTableState.dateFilters[key] = filter;
+    } else {
+      delete issueTableState.dateFilters[key];
+    }
+  }
+
+  function setIssueTableNumberFilter(key, part, value) {
+    var filter = issueTableState.numberFilters[key] || {};
+
+    if (value !== '') {
+      filter[part] = value;
+    } else {
+      delete filter[part];
+    }
+
+    if (filter.from || filter.to) {
+      issueTableState.numberFilters[key] = filter;
+    } else {
+      delete issueTableState.numberFilters[key];
+    }
+  }
+
+  function handleIssueTableMenuAction(action, key) {
+    if (!key && action !== 'close') return;
+
+    if (action === 'sort-asc' || action === 'sort-desc') {
+      issueTableState.sortKey = key;
+      issueTableState.sortDirection = action === 'sort-desc' ? 'desc' : 'asc';
+    } else if (action === 'clear-sort') {
+      if (issueTableState.sortKey === key) {
+        issueTableState.sortKey = '';
+        issueTableState.sortDirection = 'asc';
+      }
+    } else if (action === 'select-all' || action === 'clear-filter') {
+      delete issueTableState.filters[key];
+    } else if (action === 'clear-values') {
+      issueTableState.filters[key] = [];
+    } else if (action === 'reset-filter') {
+      delete issueTableState.filters[key];
+      delete issueTableState.textFilters[key];
+      delete issueTableState.dateFilters[key];
+      delete issueTableState.numberFilters[key];
+    } else if (action === 'close') {
+      issueTableState.openColumnKey = '';
+      issueTableState.searchText = '';
+    }
+  }
+
+  function formatStatusLabel(value) {
+    var clean = String(value || '').replace(/_/g, ' ').trim();
+    if (!clean) return '-';
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  }
+
+  function getCurrentProjectId() {
+    return (
+      window.currentModelInfo?.projectId ||
+      currentIssueDetail?.issue?.projectId ||
+      currentIssueDetail?.issue?.attributes?.projectId ||
+      ''
+    );
+  }
+
+  function getCurrentAccountId() {
+    return (
+      window.currentModelInfo?.hubId ||
+      window.currentModelInfo?.accountId ||
+      ''
+    );
+  }
+
+  function issueApiQuery() {
+    var accountId = getCurrentAccountId();
+    return accountId ? '?accountId=' + encodeURIComponent(accountId) : '';
+  }
+
+  function issueApiUrl(issueId, suffix) {
+    var projectId = getCurrentProjectId();
+
+    if (!projectId || !issueId) return '';
+
+    return '/api/projects/' + encodeURIComponent(projectId) +
+      '/issues/' + encodeURIComponent(issueId) +
+      (suffix || '') +
+      issueApiQuery();
+  }
+
+  async function loadIssueSettings(forceReload) {
+    var projectId = getCurrentProjectId();
+    var accountId = getCurrentAccountId();
+    var cacheKey = projectId + '|' + accountId;
+
+    if (!projectId) return null;
+    if (!forceReload && issueSettingsCache && issueSettingsCacheKey === cacheKey) return issueSettingsCache;
+
+    issueTableCustomColumnIds = [];
+
+    var query = accountId ? '?accountId=' + encodeURIComponent(accountId) : '';
+    var response = await fetch('/api/projects/' + encodeURIComponent(projectId) + '/issues/settings' + query);
+    var body = await response.json().catch(function () { return null; });
+
+    if (!response.ok) {
+      throw new Error(body?.error || 'Issue settings request failed: ' + response.status);
+    }
+
+    issueSettingsCache = body || {};
+    issueSettingsCacheKey = cacheKey;
+    clearIssueTableColumnWidths();
+    loadIssueTableCustomColumnIds();
+
+    return issueSettingsCache;
+  }
+
+  function canEditIssueAttribute(issue, attribute) {
+    var permitted = issue?.permittedAttributes;
+
+    if (!Array.isArray(permitted)) return false;
+
+    return permitted.includes(attribute);
+  }
+
+  function canUseIssueAction(issue, action) {
+    var actions = issue?.permittedActions;
+
+    if (!Array.isArray(actions)) return false;
+
+    return actions.includes(action);
+  }
+
+  function getIssueCustomAttributes(issue) {
+    return Array.isArray(issue?.customAttributes)
+      ? issue.customAttributes
+      : Array.isArray(issue?.attributes?.customAttributes)
+        ? issue.attributes.customAttributes
+        : [];
+  }
+
+  function getIssueCustomAttributeDefinitionId(attribute) {
+    return (
+      attribute?.attributeDefinitionId ||
+      attribute?.attributes?.attributeDefinitionId ||
+      attribute?.definition?.id ||
+      attribute?.attributeDefinition?.id ||
+      ''
+    );
+  }
+
+  function getIssueCustomAttribute(issue, attributeDefinitionId) {
+    var expectedId = String(attributeDefinitionId || '');
+
+    return getIssueCustomAttributes(issue).find(function (attribute) {
+      return String(getIssueCustomAttributeDefinitionId(attribute)) === expectedId;
+    }) || null;
+  }
+
+  function getCustomAttributeDefinition(settings, attributeDefinitionId) {
+    var definitions = settings?.customAttributeDefinitions || [];
+
+    return definitions.find(function (definition) {
+      return String(definition.id) === String(attributeDefinitionId);
+    }) || null;
+  }
+
+  function getCustomAttributeDisplayValue(attribute, settings, knownDefinition) {
+    var definition = knownDefinition || getCustomAttributeDefinition(settings, getIssueCustomAttributeDefinitionId(attribute));
+    var option = definition?.options?.find(function (item) {
+      return String(item.id) === String(attribute.value);
+    });
+
+    if (attribute.value && isDropdownCustomAttribute(definition, attribute) && !option) {
+      return 'Unresolved option';
+    }
+
+    return text(option?.name || attribute.value, 'Unspecified');
+  }
+
+  function getCustomAttributeLabel(attribute, settings) {
+    var definition = getCustomAttributeDefinition(settings, getIssueCustomAttributeDefinitionId(attribute));
+    return text(attribute?.title || definition?.title, 'Custom field');
+  }
+
+  function getCustomAttributeType(definition, attribute) {
+    return normalise(definition?.type || attribute?.type || '');
+  }
+
+  function isDropdownCustomAttribute(definition, attribute) {
+    var typeValue = getCustomAttributeType(definition, attribute);
+
+    return typeValue.includes('drop') || typeValue.includes('list') || typeValue.includes('select');
+  }
+
+  function renderCustomAttributeEditor(attribute, definition) {
+    var typeValue = getCustomAttributeType(definition, attribute);
+    var value = attribute?.value === null || attribute?.value === undefined ? '' : attribute.value;
+
+    if (isDropdownCustomAttribute(definition, attribute)) {
+      var options = (definition?.options || []).map(function (option) {
+        return { value: option.id, label: option.name };
+      });
+      var hasCurrentOption = options.some(function (option) {
+        return String(option.value) === String(value);
+      });
+
+      if (value && !hasCurrentOption) {
+        options.push({ value: value, label: 'Unresolved option' });
+      }
+
+      return '<select id="issueEditor-customAttribute">' +
+        buildSelectOptions(options, value, 'Unspecified') +
+        '</select>';
+    }
+
+    if (typeValue.includes('paragraph')) {
+      return '<textarea id="issueEditor-customAttribute">' + escapeHtml(value) + '</textarea>';
+    }
+
+    var inputType = typeValue.includes('numeric') || typeValue.includes('number') ? 'number' : 'text';
+    return '<input id="issueEditor-customAttribute" type="' + inputType + '" value="' + escapeAttribute(value) + '">';
+  }
+
+  function getCustomAttributeMappingValue(mapping, key) {
+    var snakeKey = key.replace(/[A-Z]/g, function (letter) {
+      return '_' + letter.toLowerCase();
+    });
+
+    return (
+      mapping?.[key] ||
+      mapping?.[snakeKey] ||
+      mapping?.attributes?.[key] ||
+      mapping?.attributes?.[snakeKey] ||
+      mapping?.relationships?.[key]?.data?.id ||
+      mapping?.relationships?.[snakeKey]?.data?.id ||
+      ''
+    );
+  }
+
+  function getCustomAttributeDefinitionIdFromMapping(mapping) {
+    return (
+      getCustomAttributeMappingValue(mapping, 'attributeDefinitionId') ||
+      getCustomAttributeMappingValue(mapping, 'customAttributeDefinitionId') ||
+      getCustomAttributeMappingValue(mapping, 'issueAttributeDefinitionId') ||
+      getCustomAttributeMappingValue(mapping, 'definitionId') ||
+      getCustomAttributeMappingValue(mapping, 'customAttributeId') ||
+      mapping?.relationships?.attributeDefinition?.data?.id ||
+      mapping?.relationships?.attribute_definition?.data?.id ||
+      mapping?.relationships?.customAttributeDefinition?.data?.id ||
+      mapping?.relationships?.custom_attribute_definition?.data?.id
+    );
+  }
+
+  function getMappingTargetId(mapping) {
+    return String(
+      getCustomAttributeMappingValue(mapping, 'mappedItemId') ||
+      getCustomAttributeMappingValue(mapping, 'mapped_item_id') ||
+      mapping?.relationships?.mappedItem?.data?.id ||
+      mapping?.relationships?.mapped_item?.data?.id ||
+      ''
+    );
+  }
+
+  function getMappingTargetType(mapping) {
+    return normalise(
+      getCustomAttributeMappingValue(mapping, 'mappedItemType') ||
+      getCustomAttributeMappingValue(mapping, 'mapped_item_type') ||
+      mapping?.relationships?.mappedItem?.data?.type ||
+      mapping?.relationships?.mapped_item?.data?.type ||
+      ''
+    );
+  }
+
+  function getIssueTypeIdForCustomAttributeMapping(issue, settings) {
+    var issueSubtypeId = String(getIssueSubtypeId(issue) || '');
+    var directTypeId = String(getIssueTypeId(issue) || '');
+
+    if (directTypeId) return directTypeId;
+
+    var subtype = (settings?.issueSubtypes || []).find(function (item) {
+      return String(item.id) === issueSubtypeId;
+    });
+
+    return String(subtype?.issueTypeId || '');
+  }
+
+  function mappingAppliesToIssue(mapping, issue, settings) {
+    var issueTypeId = getIssueTypeIdForCustomAttributeMapping(issue, settings);
+    var issueSubtypeId = String(getIssueSubtypeId(issue) || '');
+    var mappingTypeId = String(getCustomAttributeMappingValue(mapping, 'issueTypeId') || '');
+    var mappingSubtypeId = String(
+      getCustomAttributeMappingValue(mapping, 'issueSubtypeId') ||
+      getCustomAttributeMappingValue(mapping, 'issueSubTypeId')
+    );
+    var mappedItemId = getMappingTargetId(mapping);
+    var mappedItemType = getMappingTargetType(mapping);
+
+    if (mappedItemId && mappedItemType.includes('subtype')) return mappedItemId === issueSubtypeId;
+    if (mappedItemId && mappedItemType.includes('type')) return mappedItemId === issueTypeId;
+    if (mappedItemId && !mappedItemType) return mappedItemId === issueSubtypeId || mappedItemId === issueTypeId;
+
+    if (mappingSubtypeId) return mappingSubtypeId === issueSubtypeId;
+    if (mappingTypeId) return mappingTypeId === issueTypeId;
+
+    return true;
+  }
+
+  function getCustomAttributeDefinitionsForIssue(issue, settings) {
+    var definitions = settings?.customAttributeDefinitions || [];
+    var definitionsById = {};
+    var issueAttributeDefinitionsById = {};
+    var ids = {};
+
+    definitions.forEach(function (definition) {
+      definitionsById[String(definition.id)] = definition;
+    });
+
+    getIssueCustomAttributes(issue).forEach(function (attribute) {
+      var id = getIssueCustomAttributeDefinitionId(attribute);
+      if (!id) return;
+
+      ids[String(id)] = true;
+      issueAttributeDefinitionsById[String(id)] = {
+        id: String(id),
+        title: attribute.title || 'Custom field',
+        type: attribute.type || 'text',
+        options: []
+      };
+    });
+
+    (settings?.customAttributeMappings || []).forEach(function (mapping) {
+      if (!mappingAppliesToIssue(mapping, issue, settings)) return;
+
+      var definitionId = getCustomAttributeDefinitionIdFromMapping(mapping);
+      if (definitionId) ids[String(definitionId)] = true;
+    });
+
+    return Object.keys(ids).map(function (id) {
+      return definitionsById[id] || issueAttributeDefinitionsById[id] || null;
+    }).filter(function (definition) {
+      return definition !== null;
+    });
+  }
+
+  function getIssueSubtypeId(issue) {
+    return (
+      issue?.issueSubtypeId ||
+      issue?.attributes?.issueSubtypeId ||
+      issue?.issueSubtype?.id ||
+      issue?.attributes?.issueSubtype?.id ||
+      ''
+    );
+  }
+
+  function getIssueTypeId(issue) {
+    return (
+      issue?.issueTypeId ||
+      issue?.attributes?.issueTypeId ||
+      issue?.issueType?.id ||
+      issue?.attributes?.issueType?.id ||
+      ''
+    );
+  }
+
+  function getRootCauseId(issue) {
+    return (
+      issue?.rootCauseId ||
+      issue?.attributes?.rootCauseId ||
+      issue?.rootCause?.id ||
+      issue?.attributes?.rootCause?.id ||
+      ''
+    );
+  }
+
+  function getAssigneeValue(issue) {
+    var typeValue = getAssignedToType(issue);
+    var idValue =
+      issue?.assignedTo ||
+      issue?.attributes?.assignedTo ||
+      '';
+
+    return typeValue && idValue ? String(typeValue) + ':' + String(idValue) : '';
+  }
+
+  function buildSelectOptions(options, selectedValue, placeholder) {
+    var html = '<option value="">' + escapeHtml(placeholder || 'Select') + '</option>';
+
+    options.forEach(function (option) {
+      var value = String(option.value ?? option.id ?? '');
+      var label = option.label || option.name || value;
+      var selected = String(selectedValue || '') === value ? ' selected' : '';
+
+      html += '<option value="' + escapeAttribute(value) + '"' + selected + '>' +
+        escapeHtml(label) +
+        '</option>';
+    });
+
+    return html;
+  }
+
+  function typeBadgeText(label) {
+    var clean = String(label || '').trim();
+    var lower = clean.toLowerCase();
+
+    if (lower.includes('clash')) return 'CL';
+    if (lower.includes('coordination')) return 'COR';
+    if (lower.includes('commissioning')) return 'CM';
+
+    var words = clean.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      return words.map(function (word) {
+        return word.charAt(0);
+      }).join('').slice(0, 3).toUpperCase();
+    }
+
+    return clean.slice(0, clean.length > 8 ? 3 : 2).toUpperCase() || 'T';
+  }
+
+  function renderTypeBadge(label) {
+    return '<span class="accIssueTypeBadge">' + escapeHtml(typeBadgeText(label)) + '</span>';
+  }
+
+  function getIssueTypeValueHtml(issue) {
+    var label = getIssueType(issue, {});
+    return '<span class="accIssueTypeValue">' + renderTypeBadge(label) + '<span>' + escapeHtml(label) + '</span></span>';
+  }
+
+  function getIssueQuickFilterType(issue) {
+    var subtypeId = getIssueSubtypeId(issue);
+    var subtype = (issueSettingsCache?.issueSubtypes || []).find(function (item) {
+      return String(item.id) === String(subtypeId);
+    });
+
+    if (subtype?.name) {
+      return subtype.categoryName
+        ? subtype.categoryName + ' / ' + subtype.name
+        : subtype.name;
+    }
+
+    var subtypeName =
+      issue?.issueSubtype?.title ||
+      issue?.issueSubtype?.name ||
+      issue?.issueSubtypeName ||
+      issue?.attributes?.issueSubtype ||
+      issue?.subtype ||
+      '';
+
+    if (subtypeName) return getDisplayName(subtypeName, 'Not specified');
+
+    return getIssueType(issue, {});
+  }
+
+  function getIssueQuickFilterTypeHtml(typeLabel) {
+    return renderTypeBadge(typeLabel) + '<span>' + escapeHtml(typeLabel) + '</span>';
+  }
+
+  function getIssueOpenUrl(issue) {
+    var projectId =
+      window.currentModelInfo?.projectId ||
+      currentIssueDetail?.projectId ||
+      currentIssueDetail?.summary?.projectId ||
+      issue?.projectId ||
+      issue?.containerId ||
+      issue?.attributes?.projectId ||
+      issue?.attributes?.containerId ||
+      '';
+    var issueId = getIssueId(issue, currentIssueDetail?.summary || {});
+
+    if (!projectId || !issueId) return '';
+
+    return 'https://acc.autodesk.com/docs/issues/projects/' +
+      encodeURIComponent(stripProjectPrefix(projectId)) +
+      '/issues?issueId=' +
+      encodeURIComponent(issueId);
+  }
+
+  function getIssueThumbnailUrl(issue) {
+    var dataUrl = getIssueSnapshotDataUrl(issue);
+
+    if (dataUrl) return dataUrl;
+
+    var projectId =
+      window.currentModelInfo?.projectId ||
+      currentIssueDetail?.projectId ||
+      currentIssueDetail?.summary?.projectId ||
+      issue?.projectId ||
+      issue?.containerId ||
+      issue?.attributes?.projectId ||
+      issue?.attributes?.containerId ||
+      '';
+    var issueId = getIssueId(issue, currentIssueDetail?.summary || {});
+
+    if (!projectId || !issueId || !getIssueSnapshotUrn(issue)) return '';
+
+    return '/api/projects/' +
+      encodeURIComponent(stripProjectPrefix(projectId)) +
+      '/issues/' +
+      encodeURIComponent(issueId) +
+      '/thumbnail' +
+      issueApiQuery();
+  }
+
+  function getReferenceUrl(reference, issue) {
+    var directUrl =
+      reference?.webUrl ||
+      reference?.web_url ||
+      reference?.url ||
+      reference?.href ||
+      reference?.originContext?.fallbackViewerUrl ||
+      reference?.details?.originContext?.fallbackViewerUrl ||
+      '';
+
+    if (directUrl) return directUrl;
+
+    var lineageUrn =
+      reference?.lineageUrn ||
+      reference?.urn ||
+      reference?.details?.lineageUrn ||
+      '';
+    var projectId =
+      window.currentModelInfo?.projectId ||
+      issue?.projectId ||
+      issue?.containerId ||
+      issue?.attributes?.projectId ||
+      issue?.attributes?.containerId ||
+      '';
+
+    if (!projectId || !lineageUrn) return '';
+
+    return 'https://acc.autodesk.com/docs/files/projects/' +
+      encodeURIComponent(stripProjectPrefix(projectId)) +
+      '?entityId=' +
+      encodeURIComponent(lineageUrn);
+  }
+
+  function getIssueReferences(issue) {
+    var candidates = [
+      issue?.references,
+      issue?.referenceLinks,
+      issue?.referencedDocuments,
+      issue?.attributes?.references,
+      issue?.attributes?.referenceLinks,
+      issue?.attributes?.referencedDocuments
+    ];
+
+    return candidates.find(Array.isArray) || [];
+  }
+
+  function getReferenceLabel(reference) {
+    return text(
+      reference?.name ||
+      reference?.displayName ||
+      reference?.fileName ||
+      reference?.details?.viewable?.name ||
+      reference?.viewable?.name ||
+      reference?.urn ||
+      reference?.lineageUrn,
+      'Reference'
+    );
+  }
+
+  function getCommentAuthorName(comment) {
+    var candidates = [
+      comment?.createdByDisplayName,
+      comment?.createdByName,
+      comment?.createdBy
+    ];
+    var resolvedName = candidates.map(resolveKnownUserName).find(Boolean);
+    var directName = candidates.map(function (candidate) {
+      return getDisplayName(candidate, '');
+    }).find(function (name) {
+      return !isPlaceholderName(name);
+    });
+
+    return resolvedName || directName || 'Unknown user';
+  }
+
+  function getIdentityKeys(value) {
+    if (!value) return [];
+
+    if (typeof value !== 'object') return [String(value)];
+
+    var attributes = value.attributes || {};
+
+    return [
+      value.id,
+      value.userId,
+      value.uid,
+      value.autodeskId,
+      value.accountUserId,
+      value.memberId,
+      value.user?.id,
+      value.user?.userId,
+      value.user?.uid,
+      value.user?.autodeskId,
+      value.user?.accountUserId,
+      value.email,
+      attributes.id,
+      attributes.userId,
+      attributes.uid,
+      attributes.autodeskId,
+      attributes.accountUserId,
+      attributes.memberId,
+      attributes.user?.id,
+      attributes.user?.userId,
+      attributes.user?.uid,
+      attributes.user?.autodeskId,
+      attributes.user?.accountUserId,
+      attributes.email
+    ].filter(Boolean).map(String);
+  }
+
+  function hasMatchingIdentity(left, right) {
+    var leftKeys = getIdentityKeys(left).map(normalise).filter(Boolean);
+    var rightKeys = getIdentityKeys(right).map(normalise).filter(Boolean);
+
+    return leftKeys.some(function (key) {
+      return rightKeys.includes(key);
+    });
+  }
+
+  function resolveKnownUserName(value) {
+    if (!value || !issueSettingsCache) return '';
+
+    var profile = issueSettingsCache.userProfile?.data || issueSettingsCache.userProfile || {};
+    if (hasMatchingIdentity(value, profile)) {
+      var profileName = getDisplayName(profile, '');
+      return isPlaceholderName(profileName) ? '' : profileName;
+    }
+
+    var assignee = (issueSettingsCache.assignees || []).find(function (option) {
+      if (option.type !== 'user') return false;
+      if (normalise(option.id) && getIdentityKeys(value).map(normalise).includes(normalise(option.id))) return true;
+      return hasMatchingIdentity(value, option.raw);
+    });
+
+    return assignee && !isPlaceholderName(assignee.name) ? assignee.name : '';
+  }
+
+  function getCommentBody(comment) {
+    return text(comment?.body || comment?.comment || comment?.text || comment?.message, '');
+  }
+
+  function updateLoadedIssue(updatedIssue) {
+    var updatedId = getIssueId(updatedIssue, {});
+
+    if (!updatedId) return;
+
+    loadedIssues = loadedIssues.map(function (issue) {
+      return normalise(getIssueId(issue, {})) === normalise(updatedId)
+        ? updatedIssue
+        : issue;
+    });
+
+    selectedIssueTableId = updatedId;
+    renderIssueTable(loadedIssues, selectedIssueTableId);
+  }
+
+  function setCurrentIssue(updatedIssue) {
+    currentIssueDetail = {
+      ...(currentIssueDetail || {}),
+      issue: updatedIssue || {},
+      summary: {
+        ...(currentIssueDetail?.summary || {}),
+        id: getIssueId(updatedIssue, {}),
+        displayId: getIssueDisplayId(updatedIssue, {}),
+        title: getIssueTitle(updatedIssue, {}),
+        status: getIssueStatus(updatedIssue, {}),
+        type: getIssueType(updatedIssue, {}),
+        category: getIssueCategory(updatedIssue),
+        description: getIssueDescription(updatedIssue, {}),
+        assignedTo: getAssignedTo(updatedIssue, {})
+      }
     };
   }
 
-  function syncRevitConnectionPanel(forceCreate) {
-    var panel = document.getElementById('revitConnectionPanel');
-    var otpValue = document.getElementById('revitConnectionOtpValue');
-    var meta = document.getElementById('revitConnectionOtpMeta');
-    var button = document.getElementById('connectRevitInstanceButton');
+  function refreshCurrentIssueFromLoadedIssues() {
+    var currentIssueId = getIssueId(currentIssueDetail?.issue || {}, currentIssueDetail?.summary || {});
+    if (!currentIssueId) return;
 
-    if (!panel || !otpValue || !meta) return;
+    var refreshedIssue = loadedIssues.find(function (issue) {
+      return normalise(getIssueId(issue, {})) === normalise(currentIssueId);
+    });
 
-    var otpInfo = getOrCreateRevitConnectionOtp(!!forceCreate);
-
-    panel.classList.add('connected');
-    otpValue.textContent = otpInfo.otp;
-    meta.textContent = 'Use this OTP in Revit.';
-
-    if (button) {
-      button.textContent = 'Refresh Revit OTP';
+    if (!refreshedIssue) {
+      clearIssueDetails();
+      return;
     }
 
-    window.accSwitchbackRevitOtp = otpInfo.otp;
-    window.accSwitchbackRevitOtpPayload = getSwitchbackOtpPayload();
+    setCurrentIssue(refreshedIssue);
+    renderIssueDetails();
+    loadCurrentIssueSideData(refreshedIssue);
   }
+
+  async function patchCurrentIssue(updates) {
+    var issue = currentIssueDetail?.issue || {};
+    var issueId = getIssueId(issue, currentIssueDetail?.summary || {});
+    var url = issueApiUrl(issueId);
+
+    if (!url) {
+      throw new Error('Could not determine the current ACC issue.');
+    }
+
+    var response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        updates: updates
+      })
+    });
+
+    var body = await response.json().catch(function () { return null; });
+
+    if (!response.ok) {
+      throw new Error(getIssueApiErrorMessage(body, 'Issue update failed: ' + response.status));
+    }
+
+    var updatedIssue = body?.data || body?.issue || body;
+
+    setCurrentIssue(updatedIssue);
+    updateLoadedIssue(updatedIssue);
+    document.dispatchEvent(new CustomEvent('accissueupdated', { detail: { issue: updatedIssue } }));
+
+    return updatedIssue;
+  }
+
+  async function loadCurrentIssueSideData(issue) {
+    var issueId = getIssueId(issue, {});
+    var commentsUrl = issueApiUrl(issueId, '/comments');
+
+    currentIssueComments = [];
+
+    if (!commentsUrl) return;
+
+    try {
+      var comments = await fetch(commentsUrl).then(function (response) {
+        return response.json().then(function (body) {
+          if (!response.ok) throw new Error(body?.error || 'Comments failed.');
+          return body?.data || [];
+        });
+      });
+
+      if (normalise(getIssueId(currentIssueDetail?.issue || {}, {})) !== normalise(issueId)) return;
+
+      currentIssueComments = comments;
+      renderIssueDetails();
+    } catch (error) {
+      console.warn(error);
+    }
+  }
+
+  async function refreshCurrentIssueFromAcc() {
+    var issue = currentIssueDetail?.issue || {};
+    var issueId = getIssueId(issue, currentIssueDetail?.summary || {});
+    var url = issueApiUrl(issueId);
+
+    if (!url) return null;
+
+    var response = await fetch(url);
+    var body = await response.json().catch(function () { return null; });
+
+    if (!response.ok) {
+      throw new Error(body?.error || 'Issue refresh failed: ' + response.status);
+    }
+
+    var refreshedIssue = body?.data || body?.issue || body;
+
+    setCurrentIssue(refreshedIssue);
+    updateLoadedIssue(refreshedIssue);
+    await loadCurrentIssueSideData(refreshedIssue);
+
+    return refreshedIssue;
+  }
+
 
   function initRevitConnectionPanel() {
-    window.getAccSwitchbackRevitOtp = function () {
-      return getOrCreateRevitConnectionOtp(false).otp;
-    };
+    if (!window.RevitConnectionPanel) return;
 
-    window.getAccSwitchbackAuthPayload = function () {
-      return getSwitchbackOtpPayload();
-    };
-
-    var existingOtp = localStorage.getItem('acc-switchback-revit-otp');
-    if (existingOtp && /^\d{6}$/.test(existingOtp)) {
-      syncRevitConnectionPanel(false);
-    }
-
-    var button = document.getElementById('connectRevitInstanceButton');
-    if (button) {
-      button.addEventListener('click', function (event) {
-        event.preventDefault();
-        syncRevitConnectionPanel(false);
-        setStatus('Revit switchback OTP ready. Enter it in the matching Revit add-in instance.');
-      });
-    }
-
-    var copyButton = document.getElementById('copyRevitOtpButton');
-    if (copyButton) {
-      copyButton.addEventListener('click', function (event) {
-        event.preventDefault();
-        var otp = getOrCreateRevitConnectionOtp(false).otp;
-
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(otp).then(function () {
-            setStatus('Revit OTP copied to clipboard.');
-          }).catch(function () {
-            setStatus('Revit OTP: ' + otp);
-          });
-        } else {
-          setStatus('Revit OTP: ' + otp);
-        }
-      });
-    }
-
-    var newButton = document.getElementById('newRevitOtpButton');
-    if (newButton) {
-      newButton.addEventListener('click', function (event) {
-        event.preventDefault();
-        syncRevitConnectionPanel(true);
-        setStatus('New Revit switchback OTP generated.');
-      });
-    }
-  }
-
-  function injectIssuePanelStyles() {
-    if (document.getElementById('stableIssuePanelStyles')) return;
-
-    var style = document.createElement('style');
-    style.id = 'stableIssuePanelStyles';
-
-    style.textContent = `
-      #issueDetailsPanel {
-        background: #ffffff;
-        color: #172033;
-        border: 1px solid #d8dee8;
-        border-radius: 10px;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
-        font-family: Arial, sans-serif;
-      }
-
-      .stableIssueShell {
-        height: 100%;
-        min-height: 520px;
-        display: flex;
-        flex-direction: column;
-        background: #ffffff;
-      }
-
-      .stableIssueHeader {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 12px;
-        padding: 14px 14px 12px 14px;
-        border-bottom: 1px solid #e5eaf0;
-        background: #ffffff;
-      }
-
-      .stableIssueHeaderText {
-        min-width: 0;
-      }
-
-      .stableIssueEyebrow {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12px;
-        color: #697386;
-        margin-bottom: 6px;
-      }
-
-      .stableIssueTitle {
-        margin: 0;
-        font-size: 18px;
-        line-height: 1.25;
-        font-weight: 650;
-        color: #111827;
-        word-break: break-word;
-      }
-
-      .stableIssueClose {
-        width: 28px;
-        height: 28px;
-        border: 0;
-        border-radius: 6px;
-        background: transparent;
-        color: #6b7280;
-        font-size: 24px;
-        line-height: 24px;
-        cursor: pointer;
-      }
-
-      .stableIssueClose:hover {
-        background: #f3f4f6;
-        color: #111827;
-      }
-
-      .stableIssueStatusDot {
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: #f59e0b;
-        display: inline-block;
-        flex: 0 0 auto;
-      }
-
-      .stableIssueStatusDot.closed {
-        background: #10b981;
-      }
-
-      .stableIssueStatusDot.answered {
-        background: #3b82f6;
-      }
-
-      .stableIssueStatusDot.void {
-        background: #9ca3af;
-      }
-
-      .stableIssueStatusDot.draft {
-        background: #8b5cf6;
-      }
-
-      .stableIssueBody {
-        padding: 14px;
-        overflow: auto;
-        background: #ffffff;
-      }
-
-      .stableIssueEmpty {
-        padding: 18px;
-        color: #6b7280;
-        font-size: 13px;
-        line-height: 1.45;
-      }
-
-
-      .revitConnectionPanel {
-        background: #ffffff;
-        border: 1px solid #d8dee8;
-        border-radius: 10px;
-        overflow: hidden;
-        margin-bottom: 12px;
-        font-family: Arial, sans-serif;
-        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10);
-      }
-
-      .revitConnectionHeader {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px;
-        background: #f8fafc;
-        border-bottom: 1px solid #e5eaf0;
-      }
-
-      .revitConnectionTitle {
-        font-size: 13px;
-        line-height: 1.25;
-        font-weight: 700;
-        color: #111827;
-      }
-
-      .revitConnectionHint {
-        margin-top: 3px;
-        color: #64748b;
-        font-size: 11px;
-        line-height: 1.35;
-      }
-
-      .revitConnectionButton {
-        flex: 0 0 auto;
-        min-height: 30px;
-        border: 1px solid #2563eb;
-        border-radius: 7px;
-        background: #2563eb;
-        color: #ffffff;
-        font-size: 12px;
-        font-weight: 700;
-        padding: 6px 10px;
-        cursor: pointer;
-      }
-
-      .revitConnectionButton:hover {
-        background: #1d4ed8;
-        border-color: #1d4ed8;
-      }
-
-      .revitConnectionOtpRow {
-        display: none;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 10px 12px 12px;
-      }
-
-      .revitConnectionPanel.connected .revitConnectionOtpRow {
-        display: flex;
-      }
-
-      .revitConnectionOtpValue {
-        font-family: Consolas, Monaco, monospace;
-        font-size: 24px;
-        font-weight: 800;
-        letter-spacing: 0.18em;
-        color: #0f172a;
-        background: #eef2ff;
-        border: 1px solid #c7d2fe;
-        border-radius: 8px;
-        padding: 8px 12px;
-        min-width: 150px;
-        text-align: center;
-      }
-
-      .revitConnectionOtpMeta {
-        flex: 1;
-        color: #64748b;
-        font-size: 11px;
-        line-height: 1.35;
-      }
-
-      .revitConnectionOtpActions {
-        display: flex;
-        gap: 6px;
-      }
-
-      .revitConnectionSmallButton {
-        border: 1px solid #cbd5e1;
-        border-radius: 7px;
-        background: #ffffff;
-        color: #0f172a;
-        font-size: 11px;
-        padding: 6px 8px;
-        cursor: pointer;
-      }
-
-      .revitConnectionSmallButton:hover {
-        background: #f8fafc;
-        border-color: #94a3b8;
-      }
-
-      .issueSelectionModePanel {
-        background: #ffffff;
-        border: 1px solid #d8dee8;
-        border-radius: 10px;
-        overflow: hidden;
-        margin-bottom: 12px;
-        font-family: Arial, sans-serif;
-        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10);
-      }
-
-      .issueSelectionModePanel.active {
-        background: #0f3d91;
-        border-color: #0f3d91;
-        box-shadow: 0 2px 8px rgba(15, 61, 145, 0.22);
-      }
-
-      .issueSelectionModeButton {
-        width: 100%;
-        min-height: 58px;
-        border: 0;
-        background: transparent;
-        color: #0f172a;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px;
-        text-align: left;
-        cursor: pointer;
-      }
-
-      .issueSelectionModePanel.active .issueSelectionModeButton {
-        color: #ffffff;
-      }
-
-      .issueSelectionModeText {
-        display: block;
-        min-width: 0;
-      }
-
-      .issueSelectionModeTitle {
-        display: block;
-        font-size: 13px;
-        line-height: 1.25;
-        font-weight: 700;
-      }
-
-      .issueSelectionModeHint {
-        display: block;
-        margin-top: 3px;
-        color: #64748b;
-        font-size: 11px;
-        line-height: 1.35;
-      }
-
-      .issueSelectionModePanel.active .issueSelectionModeHint {
-        color: #dbeafe;
-      }
-
-      .issueSelectionModeState {
-        flex: 0 0 auto;
-        min-width: 42px;
-        border-radius: 999px;
-        padding: 4px 8px;
-        background: #e2e8f0;
-        color: #0f172a;
-        font-size: 11px;
-        font-weight: 700;
-        text-align: center;
-      }
-
-      .issueSelectionModePanel.active .issueSelectionModeState {
-        background: #ffffff;
-        color: #0f3d91;
-      }
-
-      .stableIssueCard {
-        border: 1px solid #e5eaf0;
-        border-radius: 8px;
-        background: #ffffff;
-        margin-bottom: 12px;
-        overflow: hidden;
-      }
-
-      .stableIssueCardHeader {
-        padding: 10px 12px;
-        font-size: 12px;
-        font-weight: 700;
-        color: #334155;
-        background: #f8fafc;
-        border-bottom: 1px solid #e5eaf0;
-      }
-
-      .stableIssueCardBody {
-        padding: 12px;
-      }
-
-      .stableIssueField {
-        margin-bottom: 13px;
-      }
-
-      .stableIssueField:last-child {
-        margin-bottom: 0;
-      }
-
-      .stableIssueFieldLabel {
-        font-size: 11px;
-        color: #64748b;
-        margin-bottom: 4px;
-        text-transform: uppercase;
-        letter-spacing: 0.035em;
-      }
-
-      .stableIssueFieldValue {
-        font-size: 13px;
-        line-height: 1.45;
-        color: #111827;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-
-      .stableIssueDescription {
-        min-height: 52px;
-      }
-
-      .stableIssueGrid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 10px;
-      }
-
-      .stableIssueBadge {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        max-width: 100%;
-        padding: 4px 8px;
-        border-radius: 999px;
-        background: #eef2ff;
-        color: #3730a3;
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      .issueFilterPanel {
-        background: #ffffff;
-        border: 1px solid #d8dee8;
-        border-radius: 10px;
-        overflow: hidden;
-        margin-bottom: 12px;
-        font-family: Arial, sans-serif;
-      }
-
-      .issueFilterHeader {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 12px 12px;
-        border-bottom: 1px solid #e5eaf0;
-      }
-
-      .issueFilterHeader h3 {
-        margin: 0;
-        font-size: 15px;
-        color: #111827;
-      }
-
-      .issueFilterHeaderActions {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .issueFilterHeaderActions button {
-        border: 0;
-        background: transparent;
-        color: #2563eb;
-        font-size: 12px;
-        cursor: pointer;
-        padding: 0;
-      }
-
-      .issueFilterCollapseButton {
-        color: #64748b !important;
-        font-size: 18px !important;
-        line-height: 18px;
-      }
-
-      .issueFilterBody {
-        padding: 12px;
-      }
-
-      .issueFilterPanel.collapsed .issueFilterBody {
-        display: none;
-      }
-
-      .issueFilterField {
-        margin-bottom: 12px;
-      }
-
-      .issueFilterField label {
-        display: block;
-        font-size: 12px;
-        color: #475569;
-        margin-bottom: 5px;
-      }
-
-      .issueFilterField select {
-        width: 100%;
-        height: 34px;
-        border: 1px solid #cbd5e1;
-        border-radius: 4px;
-        padding: 0 8px;
-        background: #ffffff;
-        color: #111827;
-        font-size: 13px;
-      }
-
-      .issueStatusChips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-
-      .issueStatusChip {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        border-radius: 999px;
-        padding: 4px 8px;
-        font-size: 12px;
-        cursor: pointer;
-        color: #111827;
-      }
-
-      .issueStatusChip.active {
-        border-color: #2563eb;
-        background: #eff6ff;
-      }
-
-      .issueStatusChip .statusColour {
-        width: 3px;
-        height: 14px;
-        border-radius: 2px;
-        display: inline-block;
-      }
-
-      .issueStatusChip[data-status="draft"] .statusColour {
-        background: #475569;
-      }
-
-      .issueStatusChip[data-status="open"] .statusColour {
-        background: #f59e0b;
-      }
-
-      .issueStatusChip[data-status="pending"] .statusColour {
-        background: #0ea5e9;
-      }
-
-      .issueStatusChip[data-status="in review"] .statusColour {
-        background: #8b5cf6;
-      }
-
-      .issueStatusChip[data-status="closed"] .statusColour {
-        background: #9ca3af;
-      }
-
-      .issueFilterSummary {
-        font-size: 12px;
-        color: #64748b;
-        margin-top: 8px;
-      }
-
-      .issueTablePanel {
-        margin-top: 12px;
-        border: 1px solid #d8dee8;
-        border-radius: 10px;
-        background: #ffffff;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
-        font-family: Arial, sans-serif;
-      }
-
-      .issueTableHeader {
-        display: flex;
-        align-items: center;
-        min-height: 42px;
-        padding: 0 12px;
-        font-size: 14px;
-        font-weight: 700;
-        border-bottom: 1px solid #e5eaf0;
-        background: #f8fafc;
-        color: #111827;
-      }
-
-      .issueTableWrapper {
-        max-height: 360px;
-        overflow: auto;
-        background: #ffffff;
-      }
-
-      .issueTable {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-        font-size: 12px;
-        color: #111827;
-        background: #ffffff;
-      }
-
-      .issueTable thead th {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        background: #ffffff;
-        color: #475569;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.025em;
-        border-bottom: 1px solid #d8dee8;
-      }
-
-      .issueTable th,
-      .issueTable td {
-        text-align: left;
-        padding: 9px 10px;
-        border-bottom: 1px solid #eef2f7;
-        vertical-align: middle;
-        color: #111827;
-        opacity: 1;
-      }
-
-      .issueTable th:first-child,
-      .issueTable td:first-child {
-        width: 42px;
-        color: #2563eb;
-        font-weight: 700;
-      }
-
-      .issueTable th:nth-child(2),
-      .issueTable td:nth-child(2) {
-        width: auto;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .issueTable th:nth-child(3),
-      .issueTable td:nth-child(3) {
-        width: 76px;
-        text-transform: lowercase;
-      }
-
-      .issueTable tbody tr {
-        cursor: pointer;
-        background: #ffffff;
-      }
-
-      .issueTable tbody tr:hover {
-        background: #f8fafc;
-      }
-
-      .issueTable tbody tr:nth-child(even) {
-        background: #fcfdff;
-      }
-
-      .issueTable tbody tr:nth-child(even):hover {
-        background: #f8fafc;
-      }
-
-      .issueTable tbody tr.active,
-      .issueTable tbody tr.active td {
-        background: #dbeafe !important;
-        color: #0f172a;
-        font-weight: 650;
-      }
-
-      .issueTable tbody tr.active {
-        box-shadow: inset 4px 0 0 #2563eb;
-      }
-
-
-      .right-actions {
-        padding: 10px 12px 12px;
-      }
-
-      .issueTablePanel {
-        margin-top: 12px;
-      }
-
-      .issueTableWrapper {
-        max-height: min(46vh, 520px);
-        overflow: auto;
-        background: #ffffff;
-      }
-
-      .issueTable {
-        min-width: 980px;
-        table-layout: fixed;
-      }
-
-      .issueTable thead th {
-        background: #f8fafc;
-      }
-
-      .issueTable th,
-      .issueTable td {
-        padding: 10px 10px;
-        vertical-align: top;
-      }
-
-      .issueTable th:nth-child(1),
-      .issueTable td:nth-child(1) {
-        width: 52px;
-      }
-
-      .issueTable th:nth-child(2),
-      .issueTable td:nth-child(2) {
-        width: 310px;
-      }
-
-      .issueTable th:nth-child(3),
-      .issueTable td:nth-child(3) {
-        width: 86px;
-        text-transform: lowercase;
-      }
-
-      .issueTable th:nth-child(4),
-      .issueTable td:nth-child(4) {
-        width: 190px;
-      }
-
-      .issueTable th:nth-child(5),
-      .issueTable td:nth-child(5) {
-        width: 128px;
-      }
-
-      .issueTable th:nth-child(6),
-      .issueTable td:nth-child(6) {
-        width: 170px;
-      }
-
-      .issueTable .issueTableTextCell {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .issueTable .issueTableMutedCell {
-        color: #475569;
-      }
-
-      .issueTableStatusPill {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        max-width: 100%;
-        border-radius: 999px;
-        padding: 3px 8px;
-        background: #eef2ff;
-        color: #3730a3;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: lowercase;
-      }
-
-      .issueTableStatusPill.closed {
-        background: #dcfce7;
-        color: #166534;
-      }
-
-      .issueTableStatusPill.draft {
-        background: #f1f5f9;
-        color: #334155;
-      }
-
-      .issueTableStatusPill.open {
-        background: #fff7ed;
-        color: #9a3412;
-      }
-
-    `;
-
-    document.head.appendChild(style);
+    var revitConnectionPanel = new window.RevitConnectionPanel(setStatus);
+    revitConnectionPanel.init();
   }
 
   function syncIssueSelectionModePanel() {
@@ -1210,8 +1853,6 @@
   }
 
   function buildIssueSelectionModePanel() {
-    injectIssuePanelStyles();
-
     if (document.getElementById('issueSelectionModePanel')) return;
 
     var issueDetailsPanel = document.getElementById('issueDetailsPanel');
@@ -1242,8 +1883,6 @@
   }
 
   function buildIssueFilterPanel() {
-    injectIssuePanelStyles();
-
     var rightPanel = document.querySelector('.rightPanel, #rightPanel, aside.viewerActions, #viewerActionsPanel');
     var issueDetailsPanel = document.getElementById('issueDetailsPanel');
 
@@ -1256,7 +1895,7 @@
     panel.className = 'issueFilterPanel';
     panel.innerHTML = `
       <div class="issueFilterHeader">
-        <h3>Filter issues</h3>
+        <h3>Quick Filters</h3>
         <div class="issueFilterHeaderActions">
           <button id="issueFilterResetButton" type="button">Reset</button>
           <button id="issueFilterClearButton" type="button">Clear all</button>
@@ -1266,17 +1905,13 @@
 
       <div class="issueFilterBody">
         <div class="issueFilterField">
-          <label for="issueCategoryFilter">Category</label>
-          <select id="issueCategoryFilter">
-            <option value="">Select a type</option>
-          </select>
-        </div>
-
-        <div class="issueFilterField">
           <label for="issueTypeFilter">Type</label>
-          <select id="issueTypeFilter">
-            <option value="">Select a type</option>
-          </select>
+          <button id="issueTypeFilterButton" class="issueTypeFilterButton" type="button">
+            <span id="issueTypeFilterLabel">Select a type</span>
+            <span class="glyphicon glyphicon-chevron-down"></span>
+          </button>
+          <input id="issueTypeFilter" type="hidden" value="">
+          <div id="issueTypeFilterMenu" class="issueTypeFilterMenu" hidden></div>
         </div>
 
         <div class="issueFilterField">
@@ -1329,35 +1964,89 @@
     var panel = document.createElement('section');
     panel.id = 'issueTablePanel';
     panel.className = 'issueTablePanel';
-    panel.innerHTML = '<div class="issueTableHeader">Project issues</div><div class="issueTableWrapper"><table class="issueTable"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Assigned to</th><th>Due date</th><th>Created by</th></tr></thead><tbody id="issueTableBody"><tr><td colspan="6">No issues loaded.</td></tr></tbody></table></div>';
+    panel.innerHTML =
+      '<div class="issueTableHeader">' +
+        '<span>Project issues</span>' +
+        '<div class="issueTableHeaderActions">' +
+          '<span id="issueTableCount" class="issueTableCount">No issues</span>' +
+          '<button id="issueTableRefreshButton" class="issueTableHeaderButton" type="button" title="Refresh issues from ACC/Forma">' +
+            '<span class="glyphicon glyphicon-refresh"></span>' +
+          '</button>' +
+          '<button id="issueTableCustomColumnsButton" class="issueTableHeaderButton" type="button" title="Choose custom attribute columns">' +
+            '<span class="glyphicon glyphicon-cog"></span>' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="issueTableCustomColumnsMenu" class="issueTableCustomColumnsMenu" hidden></div>' +
+      '<div id="issueTableColumnMenu" class="issueTableColumnMenu" hidden></div>' +
+      '<div class="issueTableWrapper"><table class="issueTable"><thead><tr id="issueTableHead"></tr></thead><tbody id="issueTableBody"><tr><td colspan="6">No issues loaded.</td></tr></tbody></table></div>';
     issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
+    renderIssueTableHead();
   }
 
   function renderIssueTable(issues, selectedIssueIdForRender) {
     var tbody = document.getElementById('issueTableBody');
     if (!tbody) return;
 
+    renderIssueTableHead();
+    renderIssueTableColumnMenu();
+    renderIssueTableCustomColumnsMenu();
+
+    var quickFilteredIssues = getQuickFilteredIssues(issues);
+    var rows = getIssueTableRows(quickFilteredIssues);
+    var total = (issues || []).length;
+    var count = document.getElementById('issueTableCount');
+    var columns = getIssueTableColumns();
+    var colspan = columns.length;
+    var customColumnsButton = document.getElementById('issueTableCustomColumnsButton');
+
+    if (customColumnsButton) {
+      customColumnsButton.classList.toggle('active', issueTableState.customColumnMenuOpen || issueTableCustomColumnIds.length > 0);
+    }
+
+    if (count) {
+      count.textContent = rows.length === total
+        ? total + ' issues'
+        : rows.length + ' of ' + total + ' issues';
+    }
+
     if (!issues || issues.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6">No issues loaded.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="' + colspan + '">No issues loaded.</td></tr>';
       return;
     }
 
-    tbody.innerHTML = issues.map(function (issue) {
+    if (quickFilteredIssues.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="' + colspan + '">No issues match the quick filters.</td></tr>';
+      return;
+    }
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="' + colspan + '">No issues match the table filters.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(function (issue) {
       var issueId = getIssueId(issue, {}) || '';
       var isActive = issueId && selectedIssueIdForRender && normalise(issueId) === normalise(selectedIssueIdForRender);
       var rowClass = isActive ? ' class="active"' : '';
-      var status = text(getIssueStatus(issue, {}), '-');
-      var dueDate = formatDate(getDueDate(issue));
-      var createdBy = getOpenedBy(issue);
-      var assignedTo = getAssignedTo(issue, {});
+      var cells = columns.map(function (column) {
+        var value = getIssueTableValue(issue, column.key);
+        var width = getIssueTableColumnWidth(column.key);
+        var widthStyle = width ? ' style="width:' + width + 'px; min-width:' + width + 'px;"' : '';
+
+        if (column.key === 'status') {
+          return '<td' + widthStyle + '><span class="issueTableStatusPill ' + escapeAttribute(statusClass(value)) + '">' + escapeHtml(value) + '</span></td>';
+        }
+
+        if (column.key === 'displayId') {
+          return renderIssueTableIdCell(issue, value, widthStyle);
+        }
+
+        return '<td' + widthStyle + '><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(value) + '">' + escapeHtml(value) + '</div></td>';
+      }).join('');
 
       return '<tr data-issue-id="' + escapeAttribute(issueId) + '"' + rowClass + '>' +
-        '<td>' + escapeHtml(text(getIssueDisplayId(issue, {}), '-')) + '</td>' +
-        '<td><div class="issueTableTextCell" title="' + escapeAttribute(text(getIssueTitle(issue, {}), '-')) + '">' + escapeHtml(text(getIssueTitle(issue, {}), '-')) + '</div></td>' +
-        '<td><span class="issueTableStatusPill ' + escapeAttribute(statusClass(status)) + '">' + escapeHtml(status) + '</span></td>' +
-        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(assignedTo) + '">' + escapeHtml(assignedTo) + '</div></td>' +
-        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(dueDate) + '">' + escapeHtml(dueDate) + '</div></td>' +
-        '<td><div class="issueTableTextCell issueTableMutedCell" title="' + escapeAttribute(createdBy) + '">' + escapeHtml(createdBy) + '</div></td>' +
+        cells +
       '</tr>';
     }).join('');
   }
@@ -1370,6 +2059,11 @@
     var enabled = value === true;
 
     localStorage.setItem('acc-issue-open-saved-view-on-select', String(enabled));
+
+    if (typeof window.accIssuePinsSetOpenSavedViewOnSelect === 'function') {
+      enabled = window.accIssuePinsSetOpenSavedViewOnSelect(enabled) === true;
+      localStorage.setItem('acc-issue-open-saved-view-on-select', String(enabled));
+    }
 
     syncIssueSelectionModePanel();
 
@@ -1388,195 +2082,742 @@
   }
 
   function buildStableIssuePanel() {
-    injectIssuePanelStyles();
-
     var panel = document.getElementById('issueDetailsPanel');
     if (!panel) return;
 
-    panel.innerHTML = `
-      <div class="stableIssueShell">
-        <div class="stableIssueHeader">
-          <div class="stableIssueHeaderText">
-            <div class="stableIssueEyebrow">
-              <span id="issueDetailsStatusIndicator" class="stableIssueStatusDot"></span>
-              <span id="issueDetailsNumber">Issue</span>
-              <span>·</span>
-              <span id="issueDetailsSubtitle">No issue selected</span>
-            </div>
-            <h2 id="issueDetailsTitle" class="stableIssueTitle">Select an issue pin</h2>
-          </div>
-          <button id="closeIssueDetails" class="stableIssueClose" type="button" title="Close">×</button>
-        </div>
+    panel.innerHTML = '<div class="accIssuePane"><div id="issuePaneRenderTarget"></div></div>';
+    renderIssueDetails();
+  }
 
-        <div id="issueDetailsEmpty" class="stableIssueEmpty">
-          Select an issue pin in the viewer to review the issue information here.
-        </div>
+  function renderIssueField(field, label, valueHtml, editable, editorHtml) {
+    var isEditing = activeIssueEditField === field;
+    var editButton = editable
+      ? '<button class="accIssueIconButton" type="button" data-issue-edit="' + escapeAttribute(field) + '" title="Edit ' + escapeAttribute(label) + '"><span class="glyphicon glyphicon-pencil"></span></button>'
+      : '';
+    var fieldClass = editable ? 'accIssueField editable' : 'accIssueField';
+    var editableAttributes = editable
+      ? ' data-issue-field-edit="' + escapeAttribute(field) + '" tabindex="0" role="button"'
+      : '';
 
-        <div id="issueDetailsContent" class="stableIssueBody" style="display:none;">
-          <div class="stableIssueCard">
-            <div class="stableIssueCardHeader">Issue</div>
-            <div class="stableIssueCardBody">
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Status</div>
-                <div id="issueDetailsStatus" class="stableIssueFieldValue stableIssueBadge">-</div>
-              </div>
+    if (isEditing) {
+      return '' +
+        '<div class="accIssueField">' +
+          '<label class="accIssueFieldLabel">' + escapeHtml(label) + '</label>' +
+          '<div class="accIssueEditor">' +
+            (editorHtml || '') +
+            '<div class="accIssueEditorActions">' +
+              '<button class="accIssueSmallButton" type="button" data-issue-cancel>Cancel</button>' +
+              '<button class="accIssueSmallButton primary" type="button" data-issue-save="' + escapeAttribute(field) + '">Save</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+    }
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Type</div>
-                <div id="issueDetailsType" class="stableIssueFieldValue">-</div>
-              </div>
+    return '' +
+      '<div class="' + fieldClass + '"' + editableAttributes + '>' +
+        '<label class="accIssueFieldLabel">' + escapeHtml(label) + '</label>' +
+        '<div class="accIssueFieldLine">' +
+          '<div class="accIssueFieldValue">' + (valueHtml || '-') + '</div>' +
+          editButton +
+        '</div>' +
+      '</div>';
+  }
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Description</div>
-                <div id="issueDetailsDescription" class="stableIssueFieldValue stableIssueDescription">-</div>
-              </div>
-            </div>
-          </div>
+  function getIssuePlacementLabel(issue) {
+    var linkedDocuments = Array.isArray(issue?.linkedDocuments) ? issue.linkedDocuments : [];
+    var firstDocument = linkedDocuments[0] || null;
+    var viewableName =
+      firstDocument?.details?.viewable?.name ||
+      firstDocument?.name ||
+      firstDocument?.displayName ||
+      '';
 
-          <div class="stableIssueCard">
-            <div class="stableIssueCardHeader">Assignment</div>
-            <div class="stableIssueCardBody stableIssueGrid">
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Assigned to</div>
-                <div id="issueDetailsAssignedTo" class="stableIssueFieldValue">-</div>
-              </div>
+    if (viewableName) return viewableName;
+    if (firstDocument?.urn) return firstDocument.urn;
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Location</div>
-                <div id="issueDetailsLocation" class="stableIssueFieldValue">-</div>
-              </div>
+    var placements = Array.isArray(issue?.placements) ? issue.placements : [];
+    if (placements.length > 0) return placements.length + ' placement' + (placements.length === 1 ? '' : 's');
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Root cause</div>
-                <div id="issueDetailsRootCause" class="stableIssueFieldValue">-</div>
-              </div>
-            </div>
-          </div>
+    return '-';
+  }
 
-          <div class="stableIssueCard">
-            <div class="stableIssueCardHeader">Dates</div>
-            <div class="stableIssueCardBody stableIssueGrid">
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Start date</div>
-                <div id="issueDetailsStartDate" class="stableIssueFieldValue">-</div>
-              </div>
+  function renderStatusEditor(issue, settings) {
+    var currentStatus = getIssueStatus(issue, {});
+    var statuses = Array.isArray(issue?.permittedStatuses) && issue.permittedStatuses.length > 0
+      ? issue.permittedStatuses
+      : settings?.statuses || [];
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Due date</div>
-                <div id="issueDetailsDueDate" class="stableIssueFieldValue">-</div>
-              </div>
+    return '' +
+      '<input id="issueEditor-status" type="hidden" value="' + escapeAttribute(currentStatus) + '">' +
+      '<div class="accIssuePicker" data-picker-target="issueEditor-status">' +
+        statuses.map(function (status) {
+          var selected = normalise(status) === normalise(currentStatus) ? ' selected' : '';
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Created</div>
-                <div id="issueDetailsCreatedAt" class="stableIssueFieldValue">-</div>
-              </div>
+          return '' +
+            '<button class="accIssuePickerOption accIssueStatusOption' + selected + '" type="button" data-issue-option-value="' + escapeAttribute(status) + '" data-issue-option-target="issueEditor-status">' +
+              '<span class="accIssueStatusHatch ' + escapeAttribute(statusClass(status)) + '"></span>' +
+              '<span>' + escapeHtml(formatStatusLabel(status)) + '</span>' +
+              '<span class="accIssueOptionCheck glyphicon glyphicon-ok"></span>' +
+            '</button>';
+        }).join('') +
+      '</div>';
+  }
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Updated</div>
-                <div id="issueDetailsUpdatedAt" class="stableIssueFieldValue">-</div>
-              </div>
-            </div>
-          </div>
+  function renderIssueTypeEditor(issue, settings) {
+    var currentSubtypeId = getIssueSubtypeId(issue);
+    var issueSubtypes = settings?.issueSubtypes || [];
+    var lastCategory = null;
 
-          <div class="stableIssueCard">
-            <div class="stableIssueCardHeader">People</div>
-            <div class="stableIssueCardBody stableIssueGrid">
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Created by</div>
-                <div id="issueDetailsCreatedBy" class="stableIssueFieldValue">-</div>
-              </div>
+    return '' +
+      '<input id="issueEditor-issueSubtypeId" type="hidden" value="' + escapeAttribute(currentSubtypeId) + '">' +
+      '<div class="accIssuePicker" data-picker-target="issueEditor-issueSubtypeId">' +
+        '<div class="accIssuePickerSearch">' +
+          '<span class="glyphicon glyphicon-search"></span>' +
+          '<input type="search" data-issue-option-search placeholder="Search...">' +
+        '</div>' +
+        '<div class="accIssuePickerList">' +
+          issueSubtypes.map(function (subtype) {
+            var category = subtype.categoryName || subtype.issueTypeName || 'Type';
+            var groupHeader = '';
+            var selected = String(subtype.id) === String(currentSubtypeId) ? ' selected' : '';
+            var optionText = [category, subtype.name].join(' ');
 
-              <div class="stableIssueField">
-                <div class="stableIssueFieldLabel">Updated by</div>
-                <div id="issueDetailsUpdatedBy" class="stableIssueFieldValue">-</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
+            if (category !== lastCategory) {
+              lastCategory = category;
+              groupHeader = '<div class="accIssuePickerGroup" data-picker-group>' + escapeHtml(category) + '</div>';
+            }
+
+            return groupHeader +
+              '<button class="accIssuePickerOption accIssueTypeOption' + selected + '" type="button" data-issue-option-value="' + escapeAttribute(subtype.id) + '" data-issue-option-target="issueEditor-issueSubtypeId" data-option-text="' + escapeAttribute(optionText) + '">' +
+                renderTypeBadge(subtype.name || category) +
+                '<span class="accIssuePickerMain">' + escapeHtml(subtype.name || 'Type') + '</span>' +
+                '<span class="accIssueOptionCheck glyphicon glyphicon-ok"></span>' +
+              '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+  }
+
+  function getAssigneeSubtitle(assignee) {
+    var raw = assignee?.raw || {};
+    var attributes = raw.attributes || {};
+    var typeValue = String(assignee?.type || '').toLowerCase();
+
+    if (typeValue === 'user') {
+      return text(
+        raw.companyName ||
+        raw.company?.name ||
+        raw.company?.displayName ||
+        attributes.companyName ||
+        attributes.company?.name ||
+        raw.roleName ||
+        raw.role?.name ||
+        attributes.roleName ||
+        attributes.role?.name ||
+        raw.email ||
+        attributes.email ||
+        '',
+        ''
+      );
+    }
+
+    if (typeValue === 'role') return 'Role';
+    if (typeValue === 'company') return 'Company';
+
+    return '';
+  }
+
+  function renderAssigneeOption(value, name, type, subtitle, selected) {
+    var typeValue = type || 'all';
+    var optionText = [name, subtitle, typeValue].join(' ');
+
+    return '' +
+      '<button class="accIssuePickerOption accIssueAssigneeOption' + (selected ? ' selected' : '') + '" type="button" data-issue-option-value="' + escapeAttribute(value) + '" data-issue-option-target="issueEditor-assignedTo" data-assignee-type="' + escapeAttribute(typeValue) + '" data-option-text="' + escapeAttribute(optionText) + '">' +
+        '<span class="accIssueAssigneeAvatar ' + escapeAttribute(typeValue) + '">' + escapeHtml(getInitials(name, '?')) + '</span>' +
+        '<span class="accIssuePickerText">' +
+          '<span class="accIssuePickerMain">' + escapeHtml(name) + '</span>' +
+          (subtitle ? '<span class="accIssuePickerMeta">' + escapeHtml(subtitle) + '</span>' : '') +
+        '</span>' +
+        '<span class="accIssueOptionCheck glyphicon glyphicon-ok"></span>' +
+      '</button>';
+  }
+
+  function renderAssigneeEditor(issue, settings) {
+    var currentValue = getAssigneeValue(issue);
+    var assignees = settings?.assignees || [];
+    var members = assignees.filter(function (assignee) { return assignee.type === 'user'; });
+    var roles = assignees.filter(function (assignee) { return assignee.type === 'role'; });
+    var companies = assignees.filter(function (assignee) { return assignee.type === 'company'; });
+
+    return '' +
+      '<input id="issueEditor-assignedTo" type="hidden" value="' + escapeAttribute(currentValue) + '">' +
+      '<div class="accIssuePicker accIssueAssigneePicker" data-picker-target="issueEditor-assignedTo" data-active-assignee-type="all">' +
+        '<div class="accIssuePickerSearch">' +
+          '<span class="glyphicon glyphicon-search"></span>' +
+          '<input type="search" data-issue-option-search placeholder="Search...">' +
+        '</div>' +
+        '<div class="accIssuePickerTabs">' +
+          '<button class="active" type="button" data-assignee-filter="all">All</button>' +
+          '<button type="button" data-assignee-filter="user">Members</button>' +
+          '<button type="button" data-assignee-filter="role">Roles</button>' +
+          '<button type="button" data-assignee-filter="company">Companies</button>' +
+        '</div>' +
+        '<div class="accIssuePickerList">' +
+          '<div class="accIssuePickerGroup" data-picker-group data-assignee-type="user">Members (' + members.length + ')</div>' +
+          renderAssigneeOption('', 'Unassigned', 'all', '', currentValue === '') +
+          members.map(function (assignee) {
+            var value = assignee.type + ':' + assignee.id;
+            var name = getAssigneeOptionName(assignee);
+            var subtitle = getAssigneeSubtitle(assignee);
+
+            return renderAssigneeOption(value, name, assignee.type, subtitle, String(value) === String(currentValue));
+          }).join('') +
+          '<div class="accIssuePickerGroup" data-picker-group data-assignee-type="role">Roles (' + roles.length + ')</div>' +
+          roles.map(function (assignee) {
+            var value = assignee.type + ':' + assignee.id;
+            var name = getAssigneeOptionName(assignee);
+            var subtitle = getAssigneeSubtitle(assignee);
+
+            return renderAssigneeOption(value, name, assignee.type, subtitle, String(value) === String(currentValue));
+          }).join('') +
+          '<div class="accIssuePickerGroup" data-picker-group data-assignee-type="company">Companies (' + companies.length + ')</div>' +
+          companies.map(function (assignee) {
+            var value = assignee.type + ':' + assignee.id;
+            var name = getAssigneeOptionName(assignee);
+            var subtitle = getAssigneeSubtitle(assignee);
+
+            return renderAssigneeOption(value, name, assignee.type, subtitle, String(value) === String(currentValue));
+          }).join('') +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderIssueEditor(field, issue, settings) {
+    if (field === 'title') {
+      return '<input id="issueEditor-title" type="text" value="' + escapeAttribute(getIssueTitle(issue, {})) + '">';
+    }
+
+    if (field === 'description') {
+      return '<textarea id="issueEditor-description">' + escapeHtml(issue?.description || '') + '</textarea>';
+    }
+
+    if (field === 'status') {
+      return renderStatusEditor(issue, settings);
+    }
+
+    if (field === 'issueSubtypeId') {
+      return renderIssueTypeEditor(issue, settings);
+    }
+
+    if (field === 'assignedTo') {
+      return renderAssigneeEditor(issue, settings);
+    }
+
+    if (field === 'rootCauseId') {
+      return '<select id="issueEditor-rootCauseId">' +
+        buildSelectOptions((settings?.rootCauses || []).map(function (rootCause) {
+          return {
+            value: rootCause.id,
+            label: (rootCause.categoryName ? rootCause.categoryName + ' > ' : '') + rootCause.name
+          };
+        }), getRootCauseId(issue), 'Unspecified') +
+        '</select>';
+    }
+
+    if (field === 'dueDate' || field === 'startDate') {
+      var dateValue = field === 'dueDate' ? getDueDate(issue) : getStartDate(issue);
+      return '<input id="issueEditor-' + field + '" type="date" value="' + escapeAttribute(toDateInputValue(dateValue)) + '">';
+    }
+
+    if (field.startsWith('customAttribute:')) {
+      var attributeDefinitionId = field.split(':')[1];
+      var attribute = getIssueCustomAttribute(issue, attributeDefinitionId) || { attributeDefinitionId: attributeDefinitionId, value: '' };
+      var definition = getCustomAttributeDefinition(settings, attributeDefinitionId);
+      return renderCustomAttributeEditor(attribute, definition);
+    }
+
+    return '';
+  }
+
+  function renderIssueThumbnail(issue) {
+    var thumbnailUrl = getIssueThumbnailUrl(issue);
+
+    if (!thumbnailUrl) {
+      return '<div class="accIssueThumbnail"><span class="accIssueThumbnailFallback">Issue thumbnail unavailable</span></div>';
+    }
+
+    return '' +
+      '<div class="accIssueThumbnail has-image">' +
+        '<img class="accIssueThumbnailImage" src="' + escapeAttribute(thumbnailUrl) + '" alt="Issue thumbnail" loading="lazy">' +
+        '<span class="accIssueThumbnailFallback">Issue thumbnail unavailable</span>' +
+      '</div>';
+  }
+
+  function renderIssueReferences(issue) {
+    var explicitReferences = getIssueReferences(issue);
+    var seen = new Set();
+    var references = explicitReferences
+      .map(function (reference) {
+        var url = getReferenceUrl(reference, issue);
+        var label = getReferenceLabel(reference);
+        var key = url || label;
+
+        if (!key || seen.has(key)) return null;
+        seen.add(key);
+
+        return {
+          url: url,
+          label: label
+        };
+      })
+      .filter(function (reference) {
+        return reference && reference.url;
+      });
+
+    return '' +
+      '<div class="accIssueReferences">' +
+        '<div class="accIssueSectionTitle">' +
+          '<span>References (' + references.length + ')</span>' +
+        '</div>' +
+        (references.length
+          ? references.map(function (reference) {
+            return '<a class="accIssueReferenceLink" href="' + escapeAttribute(reference.url) + '" target="_blank" rel="noopener noreferrer">' +
+              '<span class="glyphicon glyphicon-new-window"></span>' +
+              '<span>' + escapeHtml(reference.label) + '</span>' +
+            '</a>';
+          }).join('')
+          : '<div class="accIssueMuted">No references.</div>') +
+      '</div>';
+  }
+
+  function renderIssueComments(issue) {
+    var canComment = canUseIssueAction(issue, 'add_comment');
+    var comments = currentIssueComments || [];
+    var profile = issueSettingsCache?.userProfile || {};
+    var currentUserName = getDisplayName(profile, 'SS');
+
+    return '' +
+      '<div class="accIssueComments">' +
+        '<div class="accIssueSectionTitle">' +
+          '<span>Comments</span>' +
+          '<span class="accIssueCommentCount">Showing ' + comments.length + ' of ' + comments.length + '</span>' +
+        '</div>' +
+        (comments.length
+          ? comments.map(function (comment) {
+            var authorName = getCommentAuthorName(comment);
+            var createdAt = comment.createdAt || comment.clientCreatedAt || comment.updatedAt;
+
+            return '' +
+              '<div class="accIssueComment">' +
+                '<div class="accIssueCommentHeader">' +
+                  '<span class="accIssueCommentAvatar">' + escapeHtml(getInitials(authorName, 'U')) + '</span>' +
+                  '<span class="accIssueCommentAuthor">' + escapeHtml(authorName) + '</span>' +
+                  '<span class="accIssueCommentTime">' + escapeHtml(formatRelativeTime(createdAt)) + '</span>' +
+                '</div>' +
+                '<div class="accIssueCommentBody">' + escapeHtml(getCommentBody(comment)) + '</div>' +
+              '</div>';
+          }).join('')
+          : '<div class="accIssueMuted">No comments.</div>') +
+        '<div class="accIssueCommentForm">' +
+          '<span class="accIssueComposerAvatar">' + escapeHtml(getInitials(currentUserName, 'U')) + '</span>' +
+          '<div class="accIssueCommentEditor">' +
+            '<textarea id="issueCommentBody" ' + (canComment ? '' : 'disabled') + ' placeholder="Add a comment. Use @ to mention a user, role, or company."></textarea>' +
+            '<div id="issueCommentMentionPopup" class="accIssueMentionPopup" hidden></div>' +
+          '</div>' +
+          '<button id="issueCommentSubmit" class="accIssueSmallButton primary" type="button" ' + (canComment ? '' : 'disabled') + '>Post</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function getCommentMentionQuery(textarea) {
+    if (!textarea) return null;
+
+    var cursor = textarea.selectionStart || 0;
+    var textBeforeCursor = textarea.value.substring(0, cursor);
+    var match = textBeforeCursor.match(/(^|\s)@([^\s@]*)$/);
+
+    if (!match) return null;
+
+    return {
+      start: cursor - match[2].length - 1,
+      end: cursor,
+      text: match[2] || ''
+    };
+  }
+
+  function getCommentMentionOptions(searchText) {
+    var search = normalise(searchText);
+    var assignees = issueSettingsCache?.assignees || [];
+
+    return assignees.filter(function (assignee) {
+      var name = assignee?.name || '';
+      if (!name) return false;
+      if (!search) return true;
+
+      return normalise(name).includes(search);
+    }).slice(0, 40);
+  }
+
+  function getMentionGroupLabel(type) {
+    if (type === 'user') return 'Members';
+    if (type === 'role') return 'Roles';
+    if (type === 'company') return 'Companies';
+
+    return 'Other';
+  }
+
+  function renderCommentMentionOptions(options) {
+    var groups = ['user', 'role', 'company'];
+    var html = '';
+
+    groups.forEach(function (type) {
+      var groupOptions = options.filter(function (option) {
+        return option.type === type;
+      });
+
+      if (!groupOptions.length) return;
+
+      html += '<div class="accIssueMentionGroup">' + escapeHtml(getMentionGroupLabel(type)) + '</div>';
+      html += groupOptions.map(function (option) {
+        var name = option.name || '';
+
+        return '' +
+          '<button class="accIssueMentionOption" type="button" data-comment-mention-value="' + escapeAttribute(name) + '">' +
+            '<span class="accIssueAssigneeAvatar ' + escapeAttribute(option.type || '') + '">' + escapeHtml(getInitials(name, '?')) + '</span>' +
+            '<span class="accIssueMentionName">' + escapeHtml(name) + '</span>' +
+            '<span class="accIssueMentionType">' + escapeHtml(option.label || getMentionGroupLabel(option.type)) + '</span>' +
+          '</button>';
+      }).join('');
+    });
+
+    return html || '<div class="accIssueMentionEmpty">No matching users, roles, or companies.</div>';
+  }
+
+  function updateCommentMentionPopup(textarea) {
+    var popup = document.getElementById('issueCommentMentionPopup');
+    var query = getCommentMentionQuery(textarea);
+
+    if (!popup || !query) {
+      hideCommentMentionPopup();
+      return;
+    }
+
+    var options = getCommentMentionOptions(query.text);
+
+    popup.innerHTML = renderCommentMentionOptions(options);
+    popup.hidden = false;
+  }
+
+  function hideCommentMentionPopup() {
+    var popup = document.getElementById('issueCommentMentionPopup');
+    if (!popup) return;
+
+    popup.hidden = true;
+    popup.innerHTML = '';
+  }
+
+  function insertCommentMention(optionButton) {
+    var textarea = document.getElementById('issueCommentBody');
+    var name = optionButton?.getAttribute('data-comment-mention-value') || '';
+    var query = getCommentMentionQuery(textarea);
+
+    if (!textarea || !name || !query) return;
+
+    var before = textarea.value.substring(0, query.start);
+    var after = textarea.value.substring(query.end);
+    var mentionText = '@' + name + ' ';
+
+    textarea.value = before + mentionText + after;
+    textarea.focus();
+    textarea.setSelectionRange((before + mentionText).length, (before + mentionText).length);
+    hideCommentMentionPopup();
+  }
+
+  function renderIssueDetailsBody(issue, settings) {
+    var customFields = getCustomAttributeDefinitionsForIssue(issue, settings).map(function (definition) {
+      var attribute = getIssueCustomAttribute(issue, definition.id) || { attributeDefinitionId: definition.id, value: '' };
+      var label = getCustomAttributeLabel(attribute, settings);
+      var fieldName = getCustomAttributeColumnKey(definition.id);
+
+      return renderIssueField(
+        fieldName,
+        label,
+        escapeHtml(getCustomAttributeDisplayValue(attribute, settings, definition)),
+        canEditIssueAttribute(issue, 'customAttributes'),
+        renderIssueEditor(fieldName, issue, settings)
+      );
+    }).join('');
+
+    return '' +
+      renderIssueThumbnail(issue) +
+      renderIssueField('title', 'Title', escapeHtml(getIssueTitle(issue, {})), canEditIssueAttribute(issue, 'title'), renderIssueEditor('title', issue, settings)) +
+      renderIssueField('status', 'Status', '<span class="accIssueStatusValue"><span class="accIssueStatusBar ' + statusClass(getIssueStatus(issue, {})) + '"></span>' + escapeHtml(formatStatusLabel(getIssueStatus(issue, {}))) + '</span>', canEditIssueAttribute(issue, 'status'), renderIssueEditor('status', issue, settings)) +
+      renderIssueField('issueSubtypeId', 'Type', getIssueTypeValueHtml(issue), canEditIssueAttribute(issue, 'issueSubtypeId'), renderIssueEditor('issueSubtypeId', issue, settings)) +
+      renderIssueField('description', 'Description', escapeHtml(issue?.description || 'Unspecified'), canEditIssueAttribute(issue, 'description'), renderIssueEditor('description', issue, settings)) +
+      renderIssueField('assignedTo', 'Assigned to', escapeHtml(getAssignedTo(issue, {})), canEditIssueAttribute(issue, 'assignedTo'), renderIssueEditor('assignedTo', issue, settings)) +
+      renderIssueField('dueDate', 'Due date', escapeHtml(formatIssueDate(getDueDate(issue))), canEditIssueAttribute(issue, 'dueDate'), renderIssueEditor('dueDate', issue, settings)) +
+      renderIssueField('startDate', 'Start date', escapeHtml(formatIssueDate(getStartDate(issue))), canEditIssueAttribute(issue, 'startDate'), renderIssueEditor('startDate', issue, settings)) +
+      renderIssueField('placement', 'Placement', escapeHtml(getIssuePlacementLabel(issue)), false, '') +
+      renderIssueField('rootCauseId', 'Root cause', escapeHtml(getRootCause(issue)), canEditIssueAttribute(issue, 'rootCauseId'), renderIssueEditor('rootCauseId', issue, settings)) +
+      customFields +
+      renderIssueReferences(issue) +
+      renderIssueComments(issue);
+  }
+
+  function renderIssueActivityBody(issue) {
+    return '' +
+      renderIssueField('createdBy', 'Created by', escapeHtml(getOpenedBy(issue)), false, '') +
+      renderIssueField('createdAt', 'Created', escapeHtml(formatDate(getCreatedAt(issue))), false, '') +
+      renderIssueField('updatedBy', 'Updated by', escapeHtml(getUpdatedBy(issue)), false, '') +
+      renderIssueField('updatedAt', 'Updated', escapeHtml(formatDate(getUpdatedAt(issue))), false, '') +
+      renderIssueComments(issue);
+  }
+
+  function renderIssueDetails() {
+    var target = document.getElementById('issuePaneRenderTarget');
+    if (!target) return;
+
+    var issue = currentIssueDetail?.issue || null;
+
+    if (!issue) {
+      target.innerHTML = '' +
+        '<div class="accIssueHeader">' +
+          '<h2>Issue</h2>' +
+          '<button id="closeIssueDetails" class="accIssueClose" type="button" title="Close">x</button>' +
+        '</div>' +
+        '<div id="issueDetailsEmpty" class="stableIssueEmpty">Select an issue pin in the viewer to review the issue information here.</div>';
+      return;
+    }
+
+    var settings = issueSettingsCache || {};
+    var displayId = getIssueDisplayId(issue, currentIssueDetail?.summary || {});
+    var issueOpenUrl = getIssueOpenUrl(issue);
+
+    target.innerHTML = '' +
+      '<div class="accIssueHeader">' +
+        '<h2>Issue #' + escapeHtml(displayId) + '</h2>' +
+        '<button id="closeIssueDetails" class="accIssueClose" type="button" title="Close">x</button>' +
+      '</div>' +
+      '<div class="accIssueTabs">' +
+        '<button class="accIssueTab ' + (currentIssueTab === 'details' ? 'active' : '') + '" type="button" data-issue-tab="details">Details</button>' +
+        '<button class="accIssueTab ' + (currentIssueTab === 'activity' ? 'active' : '') + '" type="button" data-issue-tab="activity">Activity log</button>' +
+      '</div>' +
+      '<div class="accIssueActions">' +
+        (issueOpenUrl
+          ? '<a class="accIssueActionLink" href="' + escapeAttribute(issueOpenUrl) + '" target="_blank" rel="noopener noreferrer"><span class="glyphicon glyphicon-new-window"></span><span>Open issue on Forma</span></a>'
+          : '<span class="accIssueMuted">Issue link unavailable.</span>') +
+      '</div>' +
+      '<div id="issueDetailsContent" class="accIssueBody">' +
+        (currentIssueTab === 'activity' ? renderIssueActivityBody(issue) : renderIssueDetailsBody(issue, settings)) +
+      '</div>';
   }
 
   function clearIssueDetails() {
     currentIssueDetail = null;
-
-    var panel = document.getElementById('issueDetailsPanel');
-    var empty = document.getElementById('issueDetailsEmpty');
-    var content = document.getElementById('issueDetailsContent');
-    var indicator = document.getElementById('issueDetailsStatusIndicator');
-
-    if (panel) panel.classList.add('empty');
-    if (empty) empty.style.display = 'block';
-    if (content) content.style.display = 'none';
-
-    if (indicator) indicator.className = 'stableIssueStatusDot';
-
-    setElementText('issueDetailsNumber', 'Issue');
-    setElementText('issueDetailsSubtitle', 'No issue selected');
-    setElementText('issueDetailsTitle', 'Select an issue pin');
-    setElementText('issueDetailsStatus', '-');
-    setElementText('issueDetailsType', '-');
-    setElementText('issueDetailsDescription', '-');
-    setElementText('issueDetailsAssignedTo', '-');
-    setElementText('issueDetailsLocation', '-');
-    setElementText('issueDetailsRootCause', '-');
-    setElementText('issueDetailsStartDate', '-');
-    setElementText('issueDetailsDueDate', '-');
-    setElementText('issueDetailsCreatedAt', '-');
-    setElementText('issueDetailsUpdatedAt', '-');
-    setElementText('issueDetailsCreatedBy', '-');
-    setElementText('issueDetailsUpdatedBy', '-');
+    activeIssueEditField = null;
+    currentIssueTab = 'details';
+    currentIssueComments = [];
+    renderIssueDetails();
   }
 
   function showIssueDetails(detail) {
     currentIssueDetail = detail || {};
+    activeIssueEditField = null;
+    currentIssueTab = 'details';
+    currentIssueComments = [];
 
     var summary = detail?.summary || {};
     var issue = detail?.issue || {};
-
-    var panel = document.getElementById('issueDetailsPanel');
-    var empty = document.getElementById('issueDetailsEmpty');
-    var content = document.getElementById('issueDetailsContent');
-    var indicator = document.getElementById('issueDetailsStatusIndicator');
-
-    if (panel) panel.classList.remove('empty');
-    if (empty) empty.style.display = 'none';
-    if (content) content.style.display = 'block';
-
     var displayId = getIssueDisplayId(issue, summary);
     var title = getIssueTitle(issue, summary);
-    var status = getIssueStatus(issue, summary);
 
-    setElementText('issueDetailsNumber', 'Issue #' + displayId);
-    setElementText('issueDetailsSubtitle', status);
-    setElementText('issueDetailsTitle', title);
-    setElementText('issueDetailsStatus', status);
-    setElementText('issueDetailsType', getIssueType(issue, summary));
-    setElementText('issueDetailsDescription', getIssueDescription(issue, summary));
-    setElementText('issueDetailsAssignedTo', getAssignedTo(issue, summary));
-    setElementText('issueDetailsLocation', getLocation(issue));
-    setElementText('issueDetailsRootCause', getRootCause(issue));
-    setElementText('issueDetailsStartDate', formatDate(getStartDate(issue)));
-    setElementText('issueDetailsDueDate', formatDate(getDueDate(issue)));
-    setElementText('issueDetailsCreatedAt', formatDate(getCreatedAt(issue)));
-    setElementText('issueDetailsUpdatedAt', formatDate(getUpdatedAt(issue)));
-    setElementText('issueDetailsCreatedBy', getOpenedBy(issue));
-    setElementText('issueDetailsUpdatedBy', getUpdatedBy(issue));
+    renderIssueDetails();
+    setStatus('Selected issue #' + displayId + ': ' + title);
 
-    if (indicator) {
-      indicator.className = 'stableIssueStatusDot ' + statusClass(status);
+    loadIssueSettings()
+      .then(function () {
+        renderIssueDetails();
+      })
+      .catch(function (error) {
+        console.warn(error);
+        setStatus('Issue settings could not be loaded: ' + error.message);
+      });
+
+    loadCurrentIssueSideData(issue);
+  }
+
+  function buildCurrentIssueUpdatePayload(field) {
+    var issue = currentIssueDetail?.issue || {};
+
+    if (field === 'title') {
+      var title = document.getElementById('issueEditor-title')?.value?.trim() || '';
+      if (!title) throw new Error('Title cannot be empty.');
+      return { title: title };
     }
 
-    setStatus('Selected issue #' + displayId + ': ' + title);
+    if (field === 'description') {
+      return {
+        description: document.getElementById('issueEditor-description')?.value || ''
+      };
+    }
+
+    if (field === 'status') {
+      return {
+        status: document.getElementById('issueEditor-status')?.value || null
+      };
+    }
+
+    if (field === 'issueSubtypeId') {
+      var subtypeId = document.getElementById('issueEditor-issueSubtypeId')?.value || null;
+
+      return {
+        issueSubtypeId: subtypeId
+      };
+    }
+
+    if (field === 'assignedTo') {
+      var assigneeValue = document.getElementById('issueEditor-assignedTo')?.value || '';
+
+      if (!assigneeValue) {
+        return {
+          assignedTo: null,
+          assignedToType: null
+        };
+      }
+
+      var assigneeParts = assigneeValue.split(':');
+
+      return {
+        assignedToType: assigneeParts[0] || null,
+        assignedTo: assigneeParts.slice(1).join(':') || null
+      };
+    }
+
+    if (field === 'rootCauseId') {
+      return {
+        rootCauseId: document.getElementById('issueEditor-rootCauseId')?.value || null
+      };
+    }
+
+    if (field === 'dueDate' || field === 'startDate') {
+      var dateValue = document.getElementById('issueEditor-' + field)?.value || null;
+      var payload = {};
+      payload[field] = dateValue;
+      return payload;
+    }
+
+    if (field.startsWith('customAttribute:')) {
+      var attributeDefinitionId = field.split(':')[1];
+      var value = document.getElementById('issueEditor-customAttribute')?.value || null;
+      var customAttributes = getIssueCustomAttributes(issue).map(function (attribute) {
+        var currentDefinitionId = getIssueCustomAttributeDefinitionId(attribute);
+
+        return {
+          attributeDefinitionId: currentDefinitionId,
+          value: String(currentDefinitionId) === String(attributeDefinitionId)
+            ? value
+            : attribute.value
+        };
+      });
+
+      if (!customAttributes.some(function (attribute) {
+        return String(attribute.attributeDefinitionId) === String(attributeDefinitionId);
+      })) {
+        customAttributes.push({
+          attributeDefinitionId: attributeDefinitionId,
+          value: value
+        });
+      }
+
+      return {
+        customAttributes: customAttributes
+      };
+    }
+
+    return {};
+  }
+
+  function getIssueApiErrorMessage(body, fallback) {
+    var detailMessages = Array.isArray(body?.details?.details)
+      ? body.details.details.map(function (detail) {
+        return detail.message || detail.developerMessage || detail.title || '';
+      }).filter(Boolean)
+      : [];
+
+    return (
+      body?.error ||
+      body?.details?.developerMessage ||
+      body?.details?.title ||
+      detailMessages.join(' ') ||
+      fallback
+    );
+  }
+
+  async function saveCurrentIssueField(field) {
+    try {
+      setStatus('Saving issue...');
+      var payload = buildCurrentIssueUpdatePayload(field);
+      var updatedIssue = await patchCurrentIssue(payload);
+
+      activeIssueEditField = null;
+      renderIssueDetails();
+      setStatus('Issue #' + getIssueDisplayId(updatedIssue, {}) + ' updated.');
+    } catch (error) {
+      console.warn(error);
+      setStatus('Could not update issue: ' + error.message);
+    }
+  }
+
+  async function submitIssueComment() {
+    var issue = currentIssueDetail?.issue || {};
+    var issueId = getIssueId(issue, currentIssueDetail?.summary || {});
+    var url = issueApiUrl(issueId, '/comments');
+    var textarea = document.getElementById('issueCommentBody');
+    var commentBody = textarea?.value?.trim() || '';
+
+    if (!commentBody) {
+      setStatus('Comment text is required.');
+      return;
+    }
+
+    try {
+      setStatus('Posting comment...');
+
+      var response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          body: commentBody
+        })
+      });
+
+      var body = await response.json().catch(function () { return null; });
+
+      if (!response.ok) {
+        throw new Error(body?.error || 'Comment failed: ' + response.status);
+      }
+
+      if (textarea) textarea.value = '';
+      currentIssueComments.push(body?.data || body);
+      renderIssueDetails();
+      try {
+        await refreshCurrentIssueFromAcc();
+      } catch (refreshError) {
+        console.warn(refreshError);
+      }
+      setStatus('Comment added.');
+    } catch (error) {
+      console.warn(error);
+      setStatus('Could not add comment: ' + error.message);
+    }
   }
 
   function getFilterOptionDataFromIssues(issues) {
     return {
-      categories: uniqueValues(issues.map(function (issue) {
-        return getIssueCategory(issue);
-      })),
       types: uniqueValues(issues.map(function (issue) {
-        return getIssueType(issue, {});
+        return getIssueQuickFilterType(issue);
       })),
       assignedTo: uniqueValues(issues.map(function (issue) {
         return getAssignedTo(issue, {});
@@ -1609,25 +2850,55 @@
     }
   }
 
+  function populateIssueTypeQuickFilter(values) {
+    var buttonLabel = document.getElementById('issueTypeFilterLabel');
+    var input = document.getElementById('issueTypeFilter');
+    var menu = document.getElementById('issueTypeFilterMenu');
+
+    if (!input || !menu || !buttonLabel) return;
+
+    var currentValue = input.value;
+    var options = values || [];
+
+    menu.innerHTML =
+      '<button class="issueTypeFilterOption" type="button" data-issue-type-filter-value="">' +
+        '<span class="issueTypeFilterOptionText">Select a type</span>' +
+      '</button>' +
+      options.map(function (value) {
+        var selected = String(value) === String(currentValue) ? ' selected' : '';
+
+        return '<button class="issueTypeFilterOption' + selected + '" type="button" data-issue-type-filter-value="' + escapeAttribute(value) + '">' +
+          getIssueQuickFilterTypeHtml(value) +
+        '</button>';
+      }).join('');
+
+    if (!options.includes(currentValue)) {
+      input.value = '';
+      currentValue = '';
+    }
+
+    buttonLabel.innerHTML = currentValue
+      ? getIssueQuickFilterTypeHtml(currentValue)
+      : 'Select a type';
+  }
+
   function updateIssueFilterOptions(issues) {
     buildIssueFilterPanel();
 
     var data = getFilterOptionDataFromIssues(issues || []);
 
-    populateSelect('issueCategoryFilter', data.categories, 'Select a type');
-    populateSelect('issueTypeFilter', data.types, 'Select a type');
+    populateIssueTypeQuickFilter(data.types);
     populateSelect('issueAssignedToFilter', data.assignedTo, 'Select a member, role, or company');
 
     var summary = document.getElementById('issueFilterSummary');
     if (summary) {
-      summary.textContent = 'Loaded ' + (issues || []).length + ' issues. Filters update the visible pins.';
+      summary.textContent = 'Loaded ' + (issues || []).length + ' issues. Quick filters update pins and the table.';
     }
 
     applyIssueFilters();
   }
 
   function readIssueFiltersFromUi() {
-    var category = document.getElementById('issueCategoryFilter')?.value || '';
     var type = document.getElementById('issueTypeFilter')?.value || '';
     var assignedTo = document.getElementById('issueAssignedToFilter')?.value || '';
 
@@ -1638,7 +2909,6 @@
       .filter(Boolean);
 
     currentIssueFilters = {
-      category: category,
       type: type,
       statuses: statuses,
       assignedTo: assignedTo
@@ -1647,23 +2917,61 @@
     return currentIssueFilters;
   }
 
+  function issueMatchesQuickFilters(issue, filters) {
+    var activeFilters = filters || currentIssueFilters || {};
+    var status = normaliseIssueStatusFilter(getIssueStatus(issue, {}));
+    var type = normalise(getIssueQuickFilterType(issue));
+    var assignedTo = normalise(getAssignedTo(issue, {}));
+    var statuses = activeFilters.statuses || [];
+
+    if (statuses.length > 0) {
+      var normalisedStatuses = statuses.map(normaliseIssueStatusFilter);
+      if (!normalisedStatuses.includes(status)) return false;
+    } else {
+      return false;
+    }
+
+    if (activeFilters.type && type !== normalise(activeFilters.type)) return false;
+    if (activeFilters.assignedTo && assignedTo !== normalise(activeFilters.assignedTo)) return false;
+
+    return true;
+  }
+
+  function normaliseIssueStatusFilter(value) {
+    return normalise(value).replace(/_/g, ' ');
+  }
+
+  function getQuickFilteredIssues(issues) {
+    return (issues || []).filter(function (issue) {
+      return issueMatchesQuickFilters(issue, currentIssueFilters);
+    });
+  }
+
   function applyIssueFilters() {
     var filters = readIssueFiltersFromUi();
+    var matchingIssueIds = getQuickFilteredIssues(loadedIssues).map(function (issue) {
+      return getIssueId(issue, {});
+    }).filter(Boolean);
 
     document.dispatchEvent(new CustomEvent('accissuefilterschanged', {
       detail: {
-        filters: filters
+        filters: filters,
+        issueIds: matchingIssueIds
       }
     }));
+
+    renderIssueTable(loadedIssues, selectedIssueTableId);
   }
 
   function resetIssueFilters() {
-    var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
+    var typeLabel = document.getElementById('issueTypeFilterLabel');
+    var typeMenu = document.getElementById('issueTypeFilterMenu');
     var assignedTo = document.getElementById('issueAssignedToFilter');
 
-    if (category) category.value = '';
     if (type) type.value = '';
+    if (typeLabel) typeLabel.textContent = 'Select a type';
+    if (typeMenu) typeMenu.hidden = true;
     if (assignedTo) assignedTo.value = '';
 
     document.querySelectorAll('.issueStatusChip').forEach(function (button) {
@@ -1674,12 +2982,14 @@
   }
 
   function clearAllIssueFilters() {
-    var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
+    var typeLabel = document.getElementById('issueTypeFilterLabel');
+    var typeMenu = document.getElementById('issueTypeFilterMenu');
     var assignedTo = document.getElementById('issueAssignedToFilter');
 
-    if (category) category.value = '';
     if (type) type.value = '';
+    if (typeLabel) typeLabel.textContent = 'Select a type';
+    if (typeMenu) typeMenu.hidden = true;
     if (assignedTo) assignedTo.value = '';
 
     document.querySelectorAll('.issueStatusChip').forEach(function (button) {
@@ -1690,19 +3000,28 @@
   }
 
   function initIssueFilterEvents() {
-    var category = document.getElementById('issueCategoryFilter');
     var type = document.getElementById('issueTypeFilter');
+    var typeButton = document.getElementById('issueTypeFilterButton');
     var assignedTo = document.getElementById('issueAssignedToFilter');
     var resetButton = document.getElementById('issueFilterResetButton');
     var clearButton = document.getElementById('issueFilterClearButton');
     var collapseButton = document.getElementById('issueFilterCollapseButton');
     var filterPanel = document.getElementById('issueFilterPanel');
 
-    [category, type, assignedTo].forEach(function (select) {
+    [assignedTo].forEach(function (select) {
       if (select) {
         select.addEventListener('change', applyIssueFilters);
       }
     });
+
+    if (typeButton) {
+      typeButton.addEventListener('click', function (event) {
+        event.preventDefault();
+
+        var menu = document.getElementById('issueTypeFilterMenu');
+        if (menu) menu.hidden = !menu.hidden;
+      });
+    }
 
     document.querySelectorAll('.issueStatusChip').forEach(function (button) {
       button.addEventListener('click', function () {
@@ -1734,107 +3053,58 @@
     }
   }
 
-  function initResizeGrip(gripId, side) {
-    var grip = document.getElementById(gripId);
-    var layout = document.getElementById('appLayout');
+  function updateIssuePickerVisibility(picker) {
+    if (!picker) return;
 
-    if (!grip || !layout) return;
+    var searchText = normalise(picker.querySelector('[data-issue-option-search]')?.value || '');
+    var assigneeType = picker.classList.contains('accIssueAssigneePicker')
+      ? picker.getAttribute('data-active-assignee-type') || 'all'
+      : 'all';
 
-    grip.addEventListener('mousedown', function (event) {
-      event.preventDefault();
-      document.body.classList.add('resizing-panels');
+    picker.querySelectorAll('[data-issue-option-value]').forEach(function (option) {
+      var optionText = normalise(option.getAttribute('data-option-text') || option.textContent || '');
+      var optionType = option.getAttribute('data-assignee-type') || '';
+      var matchesSearch = !searchText || optionText.includes(searchText);
+      var matchesType = assigneeType === 'all' || optionType === assigneeType;
 
-      function onMouseMove(moveEvent) {
-        var viewportWidth = window.innerWidth;
+      option.style.display = matchesSearch && matchesType ? '' : 'none';
+    });
 
-        if (side === 'left') {
-          var leftWidth = clamp(moveEvent.clientX, 220, Math.min(viewportWidth * 0.85, viewportWidth - 180));
-          layout.style.setProperty('--left-width', leftWidth + 'px');
-          localStorage.setItem('acc-switchback-left-width', String(leftWidth));
+    picker.querySelectorAll('[data-picker-group]').forEach(function (group) {
+      var groupType = group.getAttribute('data-assignee-type') || '';
+      var matchesGroupType = assigneeType === 'all' || groupType === assigneeType;
+      var hasVisibleOption = false;
+      var nextElement = group.nextElementSibling;
+
+      while (nextElement && !nextElement.matches('[data-picker-group]')) {
+        if (nextElement.matches('[data-issue-option-value]') && nextElement.style.display !== 'none') {
+          hasVisibleOption = true;
+          break;
         }
 
-        if (side === 'right') {
-          var rightWidth = clamp(viewportWidth - moveEvent.clientX, 300, Math.min(viewportWidth * 0.85, viewportWidth - 180));
-          layout.style.setProperty('--right-width', rightWidth + 'px');
-          localStorage.setItem('acc-switchback-right-width', String(rightWidth));
-        }
+        nextElement = nextElement.nextElementSibling;
       }
 
-      function onMouseUp() {
-        document.body.classList.remove('resizing-panels');
-        window.removeEventListener('mousemove', onMouseMove);
-        window.removeEventListener('mouseup', onMouseUp);
-      }
-
-      window.addEventListener('mousemove', onMouseMove);
-      window.addEventListener('mouseup', onMouseUp);
+      group.style.display = matchesGroupType && hasVisibleOption ? '' : 'none';
     });
   }
 
-  function restoreWidths() {
-    var layout = document.getElementById('appLayout');
-    if (!layout) return;
+  function setIssuePickerValue(option) {
+    var targetId = option.getAttribute('data-issue-option-target');
+    var picker = option.closest('.accIssuePicker');
+    var input = targetId ? document.getElementById(targetId) : null;
 
-    var leftWidth = localStorage.getItem('acc-switchback-left-width');
-    var rightWidth = localStorage.getItem('acc-switchback-right-width');
+    if (!picker || !input) return;
 
-    if (leftWidth) layout.style.setProperty('--left-width', leftWidth + 'px');
-    if (rightWidth) layout.style.setProperty('--right-width', rightWidth + 'px');
-  }
+    input.value = option.getAttribute('data-issue-option-value') || '';
 
-  function initCollapseButtons() {
-    var layout = document.getElementById('appLayout');
-    if (!layout) return;
-
-    var collapseLeft = document.getElementById('collapseLeftPanel');
-    var expandLeft = document.getElementById('expandLeftPanel');
-    var collapseRight = document.getElementById('collapseRightPanel');
-    var expandRight = document.getElementById('expandRightPanel');
-
-    if (collapseLeft) {
-      collapseLeft.addEventListener('click', function (event) {
-        event.preventDefault();
-        layout.classList.add('left-collapsed');
-        localStorage.setItem('acc-switchback-left-collapsed', 'true');
-      });
-    }
-
-    if (expandLeft) {
-      expandLeft.addEventListener('click', function (event) {
-        event.preventDefault();
-        layout.classList.remove('left-collapsed');
-        localStorage.setItem('acc-switchback-left-collapsed', 'false');
-      });
-    }
-
-    if (collapseRight) {
-      collapseRight.addEventListener('click', function (event) {
-        event.preventDefault();
-        layout.classList.add('right-collapsed');
-        localStorage.setItem('acc-switchback-right-collapsed', 'true');
-      });
-    }
-
-    if (expandRight) {
-      expandRight.addEventListener('click', function (event) {
-        event.preventDefault();
-        layout.classList.remove('right-collapsed');
-        localStorage.setItem('acc-switchback-right-collapsed', 'false');
-      });
-    }
-
-    if (localStorage.getItem('acc-switchback-left-collapsed') === 'true') {
-      layout.classList.add('left-collapsed');
-    }
-
-    if (localStorage.getItem('acc-switchback-right-collapsed') === 'true') {
-      layout.classList.add('right-collapsed');
-    }
+    picker.querySelectorAll('[data-issue-option-value]').forEach(function (item) {
+      item.classList.toggle('selected', item === option);
+    });
   }
 
   function initActionButtons() {
     var switchbackButton = document.getElementById('switchbackPanelButton');
-    var viewInViewerButton = document.getElementById('viewInViewerButton');
 
     if (switchbackButton) {
       switchbackButton.addEventListener('click', function (event) {
@@ -1844,33 +3114,6 @@
           window.switchbackToRevitFromViewer();
         } else {
           setStatus('Load a model first. The viewer switchback extension is not ready yet.');
-        }
-      });
-    }
-
-    if (viewInViewerButton) {
-      viewInViewerButton.addEventListener('click', function (event) {
-        event.preventDefault();
-
-        if (!window.viewer) {
-          setStatus('Load a model first.');
-          return;
-        }
-
-        var extensionName = 'NestedViewerExtension';
-        var currentlyLoaded = !!window.viewer.getExtension(extensionName);
-
-        if (currentlyLoaded) {
-          window.viewer.unloadExtension(extensionName);
-          setStatus('Viewer in Viewer unloaded.');
-        } else {
-          window.viewer.loadExtension(extensionName)
-            .then(function () {
-              setStatus('Viewer in Viewer loaded.');
-            })
-            .catch(function (error) {
-              setStatus('Could not load Viewer in Viewer: ' + error.message);
-            });
         }
       });
     }
@@ -1887,8 +3130,6 @@
 
     document.addEventListener('viewerinstance', function (event) {
       syncIssueSelectionModePanel();
-
-
       var modelInfo = event.detail?.modelInfo || {};
       setStatus('Loaded: ' + (modelInfo.name || 'model'));
     });
@@ -1907,8 +3148,18 @@
 
     document.addEventListener('accissuesloaded', function (event) {
       loadedIssues = event.detail?.issues || [];
+      var refreshIssueSettings = event.detail?.refreshIssueSettings === true;
+
+      refreshCurrentIssueFromLoadedIssues();
       updateIssueFilterOptions(loadedIssues);
       renderIssueTable(loadedIssues, selectedIssueTableId);
+
+      loadIssueSettings(refreshIssueSettings).then(function () {
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        renderIssueDetails();
+      }).catch(function (error) {
+        console.warn(error);
+      });
     });
 
     document.addEventListener('accissuefilterresult', function (event) {
@@ -1921,7 +3172,207 @@
       }
     });
 
+    document.addEventListener('accissueopensavedviewsettingchanged', function (event) {
+      if (typeof event.detail?.openSavedViewOnIssueSelect !== 'boolean') return;
+
+      localStorage.setItem(
+        'acc-issue-open-saved-view-on-select',
+        String(event.detail.openSavedViewOnIssueSelect)
+      );
+      syncIssueSelectionModePanel();
+    });
+
     document.addEventListener('click', function (event) {
+      var issueTableColumnButton = event.target?.closest?.('[data-issue-table-column]');
+      if (issueTableColumnButton) {
+        event.preventDefault();
+        var columnKey = issueTableColumnButton.getAttribute('data-issue-table-column') || '';
+        issueTableState.openColumnKey = issueTableState.openColumnKey === columnKey ? '' : columnKey;
+        issueTableState.searchText = '';
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      if (event.target?.closest?.('#issueTableRefreshButton')) {
+        event.preventDefault();
+        refreshIssuesFromAcc();
+        return;
+      }
+
+      var issueTableMenuAction = event.target?.closest?.('[data-issue-table-action]');
+      if (issueTableMenuAction) {
+        event.preventDefault();
+        var menu = issueTableMenuAction.closest('#issueTableColumnMenu');
+        var menuKey = menu ? menu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+        handleIssueTableMenuAction(issueTableMenuAction.getAttribute('data-issue-table-action'), menuKey);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      var issueTableFilterValue = event.target?.closest?.('[data-issue-table-filter-value]');
+      if (issueTableFilterValue) {
+        var filterMenu = issueTableFilterValue.closest('#issueTableColumnMenu');
+        var filterKey = filterMenu ? filterMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+        setIssueTableFilterValue(filterKey, issueTableFilterValue.value, issueTableFilterValue.checked);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      var customColumnsButton = event.target?.closest?.('#issueTableCustomColumnsButton');
+      if (customColumnsButton) {
+        event.preventDefault();
+        issueTableState.customColumnMenuOpen = !issueTableState.customColumnMenuOpen;
+        issueTableState.openColumnKey = '';
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      var customColumnsClose = event.target?.closest?.('[data-issue-custom-columns-close]');
+      if (customColumnsClose) {
+        event.preventDefault();
+        issueTableState.customColumnMenuOpen = false;
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      var customColumnToggle = event.target?.closest?.('[data-issue-custom-column-toggle]');
+      if (customColumnToggle) {
+        setIssueTableCustomColumn(customColumnToggle.value, customColumnToggle.checked);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      if (
+        issueTableState.openColumnKey &&
+        !event.target?.closest?.('#issueTableColumnMenu') &&
+        !event.target?.closest?.('[data-issue-table-column]')
+      ) {
+        issueTableState.openColumnKey = '';
+        issueTableState.searchText = '';
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+      }
+
+      if (
+        issueTableState.customColumnMenuOpen &&
+        !event.target?.closest?.('#issueTableCustomColumnsMenu') &&
+        !event.target?.closest?.('#issueTableCustomColumnsButton')
+      ) {
+        issueTableState.customColumnMenuOpen = false;
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+      }
+
+      var pickerOption = event.target?.closest?.('[data-issue-option-value]');
+      if (pickerOption) {
+        event.preventDefault();
+        setIssuePickerValue(pickerOption);
+        return;
+      }
+
+      var assigneeFilter = event.target?.closest?.('[data-assignee-filter]');
+      if (assigneeFilter) {
+        event.preventDefault();
+
+        var picker = assigneeFilter.closest('.accIssuePicker');
+        if (picker) {
+          picker.setAttribute('data-active-assignee-type', assigneeFilter.getAttribute('data-assignee-filter') || 'all');
+          picker.querySelectorAll('[data-assignee-filter]').forEach(function (button) {
+            button.classList.toggle('active', button === assigneeFilter);
+          });
+          updateIssuePickerVisibility(picker);
+        }
+
+        return;
+      }
+
+      var commentMentionOption = event.target?.closest?.('[data-comment-mention-value]');
+      if (commentMentionOption) {
+        event.preventDefault();
+        insertCommentMention(commentMentionOption);
+        return;
+      }
+
+      var issueTypeFilterOption = event.target?.closest?.('[data-issue-type-filter-value]');
+      if (issueTypeFilterOption) {
+        event.preventDefault();
+
+        var typeInput = document.getElementById('issueTypeFilter');
+        var typeLabel = document.getElementById('issueTypeFilterLabel');
+        var typeMenu = document.getElementById('issueTypeFilterMenu');
+        var typeValue = issueTypeFilterOption.getAttribute('data-issue-type-filter-value') || '';
+
+        if (typeInput) typeInput.value = typeValue;
+        if (typeLabel) {
+          typeLabel.innerHTML = typeValue
+            ? getIssueQuickFilterTypeHtml(typeValue)
+            : 'Select a type';
+        }
+        if (typeMenu) typeMenu.hidden = true;
+
+        applyIssueFilters();
+        return;
+      }
+
+      if (
+        !event.target?.closest?.('#issueTypeFilterMenu') &&
+        !event.target?.closest?.('#issueTypeFilterButton')
+      ) {
+        var openTypeMenu = document.getElementById('issueTypeFilterMenu');
+        if (openTypeMenu) openTypeMenu.hidden = true;
+      }
+
+      if (
+        !event.target?.closest?.('#issueCommentMentionPopup') &&
+        !event.target?.closest?.('#issueCommentBody')
+      ) {
+        hideCommentMentionPopup();
+      }
+
+      var fieldEditTarget = event.target?.closest?.('[data-issue-field-edit]');
+      if (fieldEditTarget && !event.target?.closest?.('button, a, input, textarea, select')) {
+        event.preventDefault();
+        activeIssueEditField = fieldEditTarget.getAttribute('data-issue-field-edit') || null;
+        renderIssueDetails();
+        return;
+      }
+
+      var issueTab = event.target?.closest?.('[data-issue-tab]');
+      if (issueTab) {
+        event.preventDefault();
+        currentIssueTab = issueTab.getAttribute('data-issue-tab') || 'details';
+        activeIssueEditField = null;
+        renderIssueDetails();
+        return;
+      }
+
+      var issueEditButton = event.target?.closest?.('[data-issue-edit]');
+      if (issueEditButton) {
+        event.preventDefault();
+        activeIssueEditField = issueEditButton.getAttribute('data-issue-edit') || null;
+        renderIssueDetails();
+        return;
+      }
+
+      var issueCancelButton = event.target?.closest?.('[data-issue-cancel]');
+      if (issueCancelButton) {
+        event.preventDefault();
+        activeIssueEditField = null;
+        renderIssueDetails();
+        return;
+      }
+
+      var issueSaveButton = event.target?.closest?.('[data-issue-save]');
+      if (issueSaveButton) {
+        event.preventDefault();
+        saveCurrentIssueField(issueSaveButton.getAttribute('data-issue-save'));
+        return;
+      }
+
+      if (event.target && event.target.id === 'issueCommentSubmit') {
+        event.preventDefault();
+        submitIssueComment();
+        return;
+      }
+
       var row = event.target?.closest?.('#issueTableBody tr[data-issue-id]');
       if (row) {
         var issueId = row.getAttribute('data-issue-id');
@@ -1976,8 +3427,10 @@
         event.preventDefault();
 
         if (typeof window.accIssuePinsClearSection === 'function') {
-          window.accIssuePinsClearSection();
-          setStatus('Issue section box cleared.');
+          var sectionCleared = window.accIssuePinsClearSection();
+          setStatus(sectionCleared === false
+            ? '2D view: no section box to clear.'
+            : 'Issue section box cleared.');
         } else if (window.viewer) {
           window.viewer.setCutPlanes([]);
           window.viewer.impl.invalidate(true, true, true);
@@ -1987,6 +3440,147 @@
         }
       }
     });
+
+    document.addEventListener('pointerdown', function (event) {
+      var resizeHandle = event.target?.closest?.('[data-issue-table-resize]');
+      var dragHandle = event.target?.closest?.('[data-issue-table-drag]');
+
+      if (!resizeHandle && !dragHandle) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (dragHandle) {
+        var draggedColumnKey = dragHandle.getAttribute('data-issue-table-drag');
+
+        if (!draggedColumnKey) return;
+
+        issueTableState.draggingColumn = {
+          key: draggedColumnKey
+        };
+
+        document.body.classList.add('dragging-issue-table-column');
+        return;
+      }
+
+      var columnKey = resizeHandle.getAttribute('data-issue-table-resize');
+      var header = resizeHandle.closest('th');
+
+      if (!columnKey || !header) return;
+
+      issueTableState.resizingColumn = {
+        key: columnKey,
+        startX: event.clientX,
+        startWidth: header.getBoundingClientRect().width
+      };
+
+      document.body.classList.add('resizing-issue-table-column');
+    });
+
+    document.addEventListener('pointermove', function (event) {
+      var resizeInfo = issueTableState.resizingColumn;
+      var dragInfo = issueTableState.draggingColumn;
+
+      if (resizeInfo) {
+        var nextWidth = resizeInfo.startWidth + (event.clientX - resizeInfo.startX);
+        setIssueTableColumnWidth(resizeInfo.key, nextWidth);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        return;
+      }
+
+      if (!dragInfo) return;
+
+      var elementUnderPointer = document.elementFromPoint(event.clientX, event.clientY);
+      var targetHeader = elementUnderPointer?.closest?.('[data-issue-table-header]');
+      var targetColumnKey = targetHeader ? targetHeader.getAttribute('data-issue-table-header') : '';
+      var targetRect = targetHeader ? targetHeader.getBoundingClientRect() : null;
+      var placeAfterTarget = targetRect
+        ? event.clientX > targetRect.left + (targetRect.width / 2)
+        : false;
+
+      if (moveIssueTableColumn(dragInfo.key, targetColumnKey, placeAfterTarget)) {
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+      }
+    });
+
+    document.addEventListener('pointerup', function () {
+      if (!issueTableState.resizingColumn && !issueTableState.draggingColumn) return;
+
+      issueTableState.resizingColumn = null;
+      issueTableState.draggingColumn = null;
+      document.body.classList.remove('resizing-issue-table-column');
+      document.body.classList.remove('dragging-issue-table-column');
+    });
+
+    document.addEventListener('input', function (event) {
+      if (event.target && event.target.id === 'issueCommentBody') {
+        updateCommentMentionPopup(event.target);
+      }
+
+      if (event.target && event.target.id === 'issueTableFilterSearch') {
+        issueTableState.searchText = event.target.value || '';
+        renderIssueTableColumnMenu();
+        var searchInput = document.getElementById('issueTableFilterSearch');
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        }
+      }
+
+      if (event.target?.matches?.('[data-issue-table-text-filter]')) {
+        var textMenu = event.target.closest('#issueTableColumnMenu');
+        var textKey = textMenu ? textMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+        setIssueTableTextFilter(textKey, event.target.value);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        var textInput = document.querySelector('[data-issue-table-text-filter]');
+        if (textInput) {
+          textInput.focus();
+          textInput.setSelectionRange(textInput.value.length, textInput.value.length);
+        }
+      }
+    });
+
+    document.addEventListener('change', function (event) {
+      if (event.target?.matches?.('[data-issue-table-date-filter]')) {
+        var dateMenu = event.target.closest('#issueTableColumnMenu');
+        var dateKey = dateMenu ? dateMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+        setIssueTableDateFilter(dateKey, event.target.getAttribute('data-issue-table-date-filter'), event.target.value);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+      }
+
+      if (event.target?.matches?.('[data-issue-table-number-filter]')) {
+        var numberMenu = event.target.closest('#issueTableColumnMenu');
+        var numberKey = numberMenu ? numberMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+        setIssueTableNumberFilter(numberKey, event.target.getAttribute('data-issue-table-number-filter'), event.target.value);
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+      }
+    });
+
+    document.addEventListener('input', function (event) {
+      if (!event.target?.matches?.('[data-issue-option-search]')) return;
+      updateIssuePickerVisibility(event.target.closest('.accIssuePicker'));
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && event.target && event.target.id === 'issueCommentBody') {
+        hideCommentMentionPopup();
+        return;
+      }
+
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+
+      var fieldEditTarget = event.target?.closest?.('[data-issue-field-edit]');
+      if (!fieldEditTarget) return;
+
+      event.preventDefault();
+      activeIssueEditField = fieldEditTarget.getAttribute('data-issue-field-edit') || null;
+      renderIssueDetails();
+    });
+
+    document.addEventListener('error', function (event) {
+      if (!event.target?.classList?.contains('accIssueThumbnailImage')) return;
+      event.target.closest('.accIssueThumbnail')?.classList?.add('load-failed');
+    }, true);
   }
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -1995,10 +3589,7 @@
     buildIssueSelectionModePanel();
     buildIssueFilterPanel();
     buildIssueTablePanel();
-    restoreWidths();
-    initResizeGrip('leftResizeGrip', 'left');
-    initResizeGrip('rightResizeGrip', 'right');
-    initCollapseButtons();
+    window.PanelLayout.init();
     initActionButtons();
     clearIssueDetails();
 

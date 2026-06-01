@@ -1,21 +1,12 @@
-/////////////////////////////////////////////////////////////////////
-// APS Viewer launcher
-// FINAL_CORRECT: keep ACC saved view restore and let AccIssuePins use corrected coordinates
-// Issue navigator workflow:
-// - Right-side issue table
-// - Click issue
-// - Resolve latest linked document version
-// - Load correct linked viewable
-// - Restore issue viewerState
-// - Redraw issue pins
-/////////////////////////////////////////////////////////////////////
-
+// Responsible for loading Autodesk Viewer documents and switching active viewables.
+// Do not put issue table rendering or right-panel button UI code here.
 var viewer;
 var fileName;
 var currentViewerDocument = null;
 var currentViewerModelInfo = null;
 var viewerLoadDocumentNodePatched = false;
 var skipNextViewContextRestore = false;
+var issueLinkedViewNameCache = new Map();
 
 var PRESERVE_REVIEW_CONTEXT_ON_DOCUMENT_SWITCH = true;
 
@@ -23,9 +14,6 @@ var lastUserContextBeforeViewSwitch = null;
 var lastUserContextCaptureTime = 0;
 var pendingViewContextRestore = null;
 
-var issueNavigatorIssues = [];
-var issueNavigatorSelectedIssueId = null;
-var issueNavigatorBusy = false;
 
 function launchViewer(urn, name, modelInfo) {
   var options = {
@@ -80,6 +68,7 @@ function launchViewer(urn, name, modelInfo) {
 
     window.viewer = viewer;
     window.openIssueInLatestViewable = openIssueInLatestViewable;
+    window.getIssueLinkedViewDisplayName = getIssueLinkedViewDisplayName;
 
     installPreDocumentBrowserContextCapture();
     installViewerLoadEventsForContextRestore();
@@ -121,477 +110,7 @@ function onDocumentLoadSuccess(doc) {
   });
 }
 
-/////////////////////////////////////////////////////////////////////
-// Issue navigator panel
-/////////////////////////////////////////////////////////////////////
-
-function installIssueNavigatorEvents() {
-  document.addEventListener('accissuesloaded', function (event) {
-    issueNavigatorIssues = event.detail && Array.isArray(event.detail.issues)
-      ? event.detail.issues
-      : [];
-
-    renderIssueNavigatorTable();
-  });
-
-  document.addEventListener('accissueselected', function (event) {
-    var detail = event.detail || {};
-    var issue = detail.issue || {};
-    var summary = detail.summary || {};
-
-    issueNavigatorSelectedIssueId =
-      issue.id ||
-      summary.id ||
-      issue.issueId ||
-      null;
-
-    renderIssueNavigatorTable();
-  });
-
-  document.addEventListener('issueviewableloaded', function (event) {
-    var issue = event.detail && event.detail.issue ? event.detail.issue : null;
-
-    if (issue) {
-      issueNavigatorSelectedIssueId = getIssueIdForNavigator(issue);
-      renderIssueNavigatorTable();
-    }
-  });
-}
-
-function installIssueNavigatorPanel() {
-  injectIssueNavigatorStyles();
-
-  var existing = document.getElementById('issueNavigatorPanel');
-  if (existing) return existing;
-
-  var rightPanel =
-    document.getElementById('issueDetailsPanel') ||
-    document.querySelector('.right-panel') ||
-    document.querySelector('[data-panel="right"]');
-
-  if (!rightPanel) {
-    console.warn('[Issue Navigator] Could not find right panel. Falling back to appLayout.');
-    rightPanel = document.getElementById('appLayout') || document.body;
-  }
-
-  var panel = document.createElement('div');
-  panel.id = 'issueNavigatorPanel';
-  panel.className = 'issue-navigator-panel';
-
-  panel.innerHTML = `
-    <div class="issue-navigator-header">
-      <div>
-        <div class="issue-navigator-title">Issues</div>
-        <div id="issueNavigatorSubtitle" class="issue-navigator-subtitle">Waiting for issues...</div>
-      </div>
-      <button id="issueNavigatorRefreshButton" class="issue-navigator-refresh" type="button" title="Reload issues">↻</button>
-    </div>
-
-    <div class="issue-navigator-search-row">
-      <input id="issueNavigatorSearchInput" class="issue-navigator-search" type="text" placeholder="Search by title, status, type, view..." />
-    </div>
-
-    <div id="issueNavigatorStatus" class="issue-navigator-status"></div>
-
-    <div class="issue-navigator-table-wrap">
-      <table class="issue-navigator-table">
-        <thead>
-          <tr>
-            <th class="issue-col-id">#</th>
-            <th class="issue-col-status">Status</th>
-            <th>Issue</th>
-            <th class="issue-col-view">View</th>
-          </tr>
-        </thead>
-        <tbody id="issueNavigatorTableBody">
-          <tr>
-            <td colspan="4" class="issue-navigator-empty">No issues loaded.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  if (rightPanel.id === 'issueDetailsPanel') {
-    rightPanel.insertBefore(panel, rightPanel.firstChild);
-  } else {
-    rightPanel.appendChild(panel);
-  }
-
-  var refreshButton = document.getElementById('issueNavigatorRefreshButton');
-  var searchInput = document.getElementById('issueNavigatorSearchInput');
-
-  if (refreshButton) {
-    refreshButton.addEventListener('click', function () {
-      if (typeof window.accIssuePinsReload === 'function') {
-        window.accIssuePinsReload();
-      }
-    });
-  }
-
-  if (searchInput) {
-    searchInput.addEventListener('input', function () {
-      renderIssueNavigatorTable();
-    });
-  }
-
-  return panel;
-}
-
-function injectIssueNavigatorStyles() {
-  if (document.getElementById('issueNavigatorRuntimeStyles')) return;
-
-  var style = document.createElement('style');
-  style.id = 'issueNavigatorRuntimeStyles';
-  style.textContent = `
-    .issue-navigator-panel {
-      border-bottom: 1px solid #d9d9d9;
-      background: #ffffff;
-      color: #111827;
-      font-family: Arial, sans-serif;
-      max-height: 48vh;
-      min-height: 260px;
-      display: flex;
-      flex-direction: column;
-      box-sizing: border-box;
-    }
-
-    .issue-navigator-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 14px 8px;
-      gap: 10px;
-      border-bottom: 1px solid #e5e7eb;
-      background: #ffffff;
-    }
-
-    .issue-navigator-title {
-      font-size: 14px;
-      font-weight: 700;
-      line-height: 18px;
-      color: #111827;
-    }
-
-    .issue-navigator-subtitle {
-      font-size: 11px;
-      color: #4b5563;
-      margin-top: 2px;
-    }
-
-    .issue-navigator-refresh {
-      width: 30px;
-      height: 30px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      cursor: pointer;
-      font-size: 16px;
-      line-height: 24px;
-    }
-
-    .issue-navigator-refresh:hover {
-      background: #eef2ff;
-      border-color: #93c5fd;
-    }
-
-    .issue-navigator-search-row {
-      padding: 8px 12px;
-      border-bottom: 1px solid #f0f0f0;
-      background: #ffffff;
-    }
-
-    .issue-navigator-search {
-      width: 100%;
-      height: 32px;
-      box-sizing: border-box;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      padding: 0 8px;
-      font-size: 12px;
-      color: #111827;
-      background: #ffffff;
-      outline: none;
-    }
-
-    .issue-navigator-search::placeholder {
-      color: #6b7280;
-    }
-
-    .issue-navigator-search:focus {
-      border-color: #2563eb;
-      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
-    }
-
-    .issue-navigator-status {
-      display: none;
-      padding: 7px 12px;
-      font-size: 11px;
-      color: #111827;
-      background: #f3f4f6;
-      border-bottom: 1px solid #e5e7eb;
-    }
-
-    .issue-navigator-status.visible {
-      display: block;
-    }
-
-    .issue-navigator-table-wrap {
-      overflow: auto;
-      flex: 1;
-      background: #ffffff;
-    }
-
-    .issue-navigator-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      color: #111827;
-      background: #ffffff;
-    }
-
-    .issue-navigator-table th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: #f9fafb;
-      color: #374151;
-      font-size: 11px;
-      font-weight: 700;
-      text-align: left;
-      border-bottom: 1px solid #d1d5db;
-      padding: 7px 8px;
-      white-space: nowrap;
-    }
-
-    .issue-navigator-table td {
-      border-bottom: 1px solid #f0f0f0;
-      padding: 8px;
-      vertical-align: top;
-      color: #111827;
-      background: transparent;
-    }
-
-    .issue-navigator-table tbody tr {
-      cursor: pointer;
-      background: #ffffff;
-    }
-
-    .issue-navigator-table tbody tr:hover {
-      background: #f8fafc;
-    }
-
-    .issue-navigator-table tbody tr.selected {
-      background: #eff6ff;
-    }
-
-    .issue-col-id {
-      width: 42px;
-      color: #111827;
-      font-weight: 700;
-    }
-
-    .issue-col-status {
-      width: 76px;
-    }
-
-    .issue-col-view {
-      width: 116px;
-    }
-
-    .issue-status-pill {
-      display: inline-block;
-      max-width: 82px;
-      border-radius: 999px;
-      background: #e5e7eb;
-      color: #111827;
-      padding: 2px 7px;
-      font-size: 10px;
-      line-height: 14px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .issue-row-title {
-      font-weight: 700;
-      color: #111827;
-      line-height: 15px;
-      max-height: 32px;
-      overflow: hidden;
-    }
-
-    .issue-row-meta {
-      margin-top: 3px;
-      color: #4b5563;
-      font-size: 10px;
-      line-height: 13px;
-    }
-
-    .issue-row-view {
-      color: #374151;
-      font-size: 10px;
-      line-height: 13px;
-      max-height: 28px;
-      overflow: hidden;
-    }
-
-    .issue-navigator-empty {
-      padding: 16px 12px !important;
-      color: #4b5563 !important;
-      text-align: center;
-      cursor: default;
-    }
-  `;
-
-  document.head.appendChild(style);
-}
-
-function renderIssueNavigatorTable() {
-  installIssueNavigatorPanel();
-
-  var tableBody = document.getElementById('issueNavigatorTableBody');
-  var subtitle = document.getElementById('issueNavigatorSubtitle');
-
-  if (!tableBody) return;
-
-  var query = '';
-  var searchInput = document.getElementById('issueNavigatorSearchInput');
-
-  if (searchInput) {
-    query = String(searchInput.value || '').trim().toLowerCase();
-  }
-
-  var issues = issueNavigatorIssues || [];
-
-  if (query) {
-    issues = issues.filter(function (issue) {
-      var searchText = [
-        getIssueDisplayIdForNavigator(issue),
-        getIssueTitleForNavigator(issue),
-        getIssueStatusForNavigator(issue),
-        getIssueTypeForNavigator(issue),
-        getIssueViewNameForNavigator(issue),
-        getIssueAssignedToForNavigator(issue)
-      ].join(' ').toLowerCase();
-
-      return searchText.indexOf(query) !== -1;
-    });
-  }
-
-  if (subtitle) {
-    subtitle.textContent = query
-      ? issues.length + ' shown from ' + issueNavigatorIssues.length + ' issues'
-      : issueNavigatorIssues.length + ' issues loaded';
-  }
-
-  if (!issues.length) {
-    tableBody.innerHTML = `
-      <tr>
-        <td colspan="4" class="issue-navigator-empty">No matching issues.</td>
-      </tr>
-    `;
-    return;
-  }
-
-  tableBody.innerHTML = '';
-
-  issues.forEach(function (issue) {
-    var issueId = getIssueIdForNavigator(issue);
-    var displayId = getIssueDisplayIdForNavigator(issue);
-    var title = getIssueTitleForNavigator(issue);
-    var status = getIssueStatusForNavigator(issue);
-    var type = getIssueTypeForNavigator(issue);
-    var viewName = getIssueViewNameForNavigator(issue);
-    var assignedTo = getIssueAssignedToForNavigator(issue);
-
-    var row = document.createElement('tr');
-
-    if (issueId && issueId === issueNavigatorSelectedIssueId) {
-      row.classList.add('selected');
-    }
-
-    row.innerHTML = `
-      <td class="issue-col-id">${escapeHtml(displayId)}</td>
-      <td class="issue-col-status"><span class="issue-status-pill">${escapeHtml(status)}</span></td>
-      <td>
-        <div class="issue-row-title">${escapeHtml(title)}</div>
-        <div class="issue-row-meta">${escapeHtml(type)} · ${escapeHtml(assignedTo)}</div>
-      </td>
-      <td class="issue-col-view">
-        <div class="issue-row-view">${escapeHtml(viewName)}</div>
-      </td>
-    `;
-
-    row.addEventListener('click', function () {
-      openIssueFromNavigator(issue);
-    });
-
-    tableBody.appendChild(row);
-  });
-}
-
-async function openIssueFromNavigator(issue) {
-  if (issueNavigatorBusy) return;
-
-  issueNavigatorBusy = true;
-  issueNavigatorSelectedIssueId = getIssueIdForNavigator(issue);
-  renderIssueNavigatorTable();
-
-  try {
-    setIssueNavigatorStatus('Opening issue #' + getIssueDisplayIdForNavigator(issue) + '...');
-
-    await openIssueInLatestViewable(issue);
-
-    setIssueNavigatorStatus('Opened issue #' + getIssueDisplayIdForNavigator(issue) + '.');
-
-    document.dispatchEvent(new CustomEvent('accissueselected', {
-      detail: {
-        issue: issue,
-        summary: {
-          id: getIssueIdForNavigator(issue),
-          displayId: getIssueDisplayIdForNavigator(issue),
-          title: getIssueTitleForNavigator(issue),
-          status: getIssueStatusForNavigator(issue),
-          type: getIssueTypeForNavigator(issue),
-          assignedTo: getIssueAssignedToForNavigator(issue),
-          location: getIssueLocationForNavigator(issue)
-        }
-      }
-    }));
-  } catch (error) {
-    console.error(error);
-    setIssueNavigatorStatus('Could not open issue: ' + error.message);
-  } finally {
-    issueNavigatorBusy = false;
-    renderIssueNavigatorTable();
-  }
-}
-
-function setIssueNavigatorStatus(message) {
-  var status = document.getElementById('issueNavigatorStatus');
-
-  if (status) {
-    status.textContent = message || '';
-
-    if (message) {
-      status.classList.add('visible');
-    } else {
-      status.classList.remove('visible');
-    }
-  }
-
-  var viewerStatus = document.getElementById('viewerActionStatus');
-
-  if (viewerStatus && message) {
-    viewerStatus.textContent = message;
-  }
-}
-
-/////////////////////////////////////////////////////////////////////
 // Open issue in latest linked viewable
-/////////////////////////////////////////////////////////////////////
 
 async function openIssueInLatestViewable(issue) {
   if (!viewer) {
@@ -635,7 +154,7 @@ async function openIssueInLatestViewable(issue) {
     throw new Error('Could not resolve latest version for linked document.');
   }
 
-  setIssueNavigatorStatus('Loading latest linked viewable...');
+  setViewerActionStatus('Loading latest linked viewable...');
 
   var documentId = 'urn:' + latest.encodedUrn;
   var doc = await loadApsDocumentAsync(documentId);
@@ -788,6 +307,75 @@ function getLinkedDocumentViewerState(linkedDocument) {
   }
 
   return viewerState;
+}
+
+async function getIssueLinkedViewDisplayName(issue) {
+  var linkedDocument = getPrimaryLinkedDocument(issue);
+
+  if (!linkedDocument) return '';
+
+  var projectId =
+    window.currentModelInfo?.projectId ||
+    currentViewerModelInfo?.projectId ||
+    issue?.projectId ||
+    issue?.attributes?.projectId ||
+    null;
+
+  var lineageUrn =
+    linkedDocument.urn ||
+    linkedDocument.lineageUrn ||
+    issue?.placements?.[0]?.lineageUrn ||
+    null;
+
+  if (!projectId || !lineageUrn) return '';
+
+  var viewableGuid = getLinkedDocumentViewableGuid(linkedDocument);
+  var viewableName = getLinkedDocumentViewableName(linkedDocument);
+  var cacheKey = [
+    projectId,
+    lineageUrn,
+    viewableGuid || '',
+    viewableName || ''
+  ].join('|');
+
+  if (issueLinkedViewNameCache.has(cacheKey)) {
+    return issueLinkedViewNameCache.get(cacheKey);
+  }
+
+  try {
+    var latest = await resolveLatestVersionForLineage(projectId, lineageUrn);
+    var bestName = latest?.displayName || '';
+
+    if (latest?.encodedUrn) {
+      var doc = await loadApsDocumentAsync('urn:' + latest.encodedUrn);
+      var viewable = findViewableInDocument(doc, viewableGuid, viewableName);
+
+      if (!viewable && doc?.getRoot?.()?.getDefaultGeometry) {
+        viewable = doc.getRoot().getDefaultGeometry();
+      }
+
+      var viewInfo = getViewableInfo(viewable);
+      var viewName = viewInfo.name || viewable?.data?.displayName || viewable?.data?.name || '';
+
+      if (!isWeakApsViewName(viewName)) {
+        bestName = viewName;
+      } else if (bestName && viewName) {
+        bestName = bestName + ' - page ' + String(viewName).replace(/[()]/g, '').trim();
+      }
+    }
+
+    issueLinkedViewNameCache.set(cacheKey, bestName || '');
+    return bestName || '';
+  } catch (error) {
+    console.warn('[Issue Navigator] Could not resolve issue linked view name:', error);
+    issueLinkedViewNameCache.set(cacheKey, '');
+    return '';
+  }
+}
+
+function isWeakApsViewName(value) {
+  var name = String(value || '').trim();
+  return !name || /^\(?\d+\)?$/.test(name) || /^unknown\b/i.test(name);
 }
 
 async function resolveLatestVersionForLineage(projectId, lineageUrn) {
@@ -945,11 +533,7 @@ function restoreIssueViewerState(viewerState) {
       restoreViewportCamera(viewport);
     }
 
-    // Important: do not call viewer.restoreState(viewerState) here.
-    // ACC issue viewerState can contain renderOptions, objectSet, hidden/isolated
-    // elements, selection and appearance settings. Restoring those changes the
-    // user's current display style and can turn the model grey/black. For this
-    // workflow we only restore the saved camera/viewport.
+    // Only restore the saved camera. Full viewer state can alter display styles and selections.
     if (viewer.impl && typeof viewer.impl.invalidate === 'function') {
       viewer.impl.invalidate(true, true, true);
     }
@@ -1071,9 +655,7 @@ function normaliseForCompare(value) {
     .replace(/[{}]/g, '');
 }
 
-/////////////////////////////////////////////////////////////////////
 // Capture full context before Document Browser changes view
-/////////////////////////////////////////////////////////////////////
 
 function installPreDocumentBrowserContextCapture() {
   var viewerContainer = document.getElementById('apsViewer');
@@ -1106,8 +688,6 @@ function captureContextBeforePossibleViewSwitch(reason) {
 
   lastUserContextBeforeViewSwitch = context;
   lastUserContextCaptureTime = Date.now();
-
-  console.log('[ApsViewer] Captured review context before possible view switch:', reason);
 }
 
 function getBestContextForViewSwitch() {
@@ -1124,9 +704,7 @@ function getBestContextForViewSwitch() {
   return captureViewerReviewContext();
 }
 
-/////////////////////////////////////////////////////////////////////
 // Patch loadDocumentNode
-/////////////////////////////////////////////////////////////////////
 
 function patchLoadDocumentNodeForViewChanges() {
   if (!viewer || viewerLoadDocumentNodePatched) return;
@@ -1207,9 +785,7 @@ function patchLoadDocumentNodeForViewChanges() {
   viewerLoadDocumentNodePatched = true;
 }
 
-/////////////////////////////////////////////////////////////////////
 // Restore again after geometry/model events because DocumentBrowser can override late
-/////////////////////////////////////////////////////////////////////
 
 function installViewerLoadEventsForContextRestore() {
   if (!viewer || typeof viewer.addEventListener !== 'function') return;
@@ -1260,9 +836,7 @@ function restoreContextWithRetries(context, model, reason) {
   });
 }
 
-/////////////////////////////////////////////////////////////////////
 // Full review context capture
-/////////////////////////////////////////////////////////////////////
 
 function captureViewerReviewContext() {
   if (!viewer || !viewer.navigation) return null;
@@ -1408,9 +982,7 @@ function getSectionBoxFromExtension(sectionExtension) {
   return null;
 }
 
-/////////////////////////////////////////////////////////////////////
 // Full review context restore
-/////////////////////////////////////////////////////////////////////
 
 function restoreReviewContextToModel(context, model, reason) {
   if (!viewer || !viewer.navigation || !context || !model) return false;
@@ -1423,7 +995,6 @@ function restoreReviewContextToModel(context, model, reason) {
       viewer.impl.invalidate(true, true, true);
     }
 
-    console.log('[ApsViewer] Restored review context:', reason);
     return true;
   } catch (error) {
     console.warn('[ApsViewer] Could not restore review context:', error);
@@ -1630,9 +1201,7 @@ function makeCutPlanesFromBox(box) {
   ];
 }
 
-/////////////////////////////////////////////////////////////////////
 // Model/geometry helpers
-/////////////////////////////////////////////////////////////////////
 
 function chooseTargetForNewModel(previousTarget, model) {
   var modelBox = getModelBoundingBox(model);
@@ -1742,18 +1311,7 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-/////////////////////////////////////////////////////////////////////
-// Issue navigator field helpers
-/////////////////////////////////////////////////////////////////////
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
+// Issue selection helpers
 
 function getIssueIdForNavigator(issue) {
   return issue?.id || issue?.issueId || issue?.attributes?.id || null;
@@ -1763,86 +1321,7 @@ function getIssueDisplayIdForNavigator(issue) {
   return issue?.displayId || issue?.attributes?.displayId || issue?.issueId || '-';
 }
 
-function getIssueTitleForNavigator(issue) {
-  return issue?.title || issue?.attributes?.title || issue?.description || issue?.attributes?.description || 'Untitled issue';
-}
-
-function getIssueStatusForNavigator(issue) {
-  return issue?.status || issue?.attributes?.status || 'Unknown';
-}
-
-function getIssueTypeForNavigator(issue) {
-  var typeName =
-    issue?.issueTypeName ||
-    issue?.issueType?.title ||
-    issue?.issueType?.name ||
-    issue?.attributes?.issueTypeName ||
-    issue?.attributes?.issueType ||
-    issue?.type ||
-    '';
-
-  var subtypeName =
-    issue?.issueSubtypeName ||
-    issue?.issueSubtype?.title ||
-    issue?.issueSubtype?.name ||
-    issue?.attributes?.issueSubtypeName ||
-    issue?.attributes?.issueSubtype ||
-    issue?.subtype ||
-    '';
-
-  if (typeName && subtypeName) return typeName + ' / ' + subtypeName;
-  return typeName || subtypeName || 'Not specified';
-}
-
-function getIssueAssignedToForNavigator(issue) {
-  var assignedTo =
-    issue?.assignedToDisplayName ||
-    issue?.assignedToName ||
-    issue?.assignedTo ||
-    issue?.attributes?.assignedTo ||
-    issue?.assignee ||
-    null;
-
-  if (!assignedTo) return 'Unassigned';
-  if (typeof assignedTo === 'string') return assignedTo;
-
-  return assignedTo.name || assignedTo.displayName || assignedTo.email || assignedTo.id || 'Assigned';
-}
-
-function getIssueLocationForNavigator(issue) {
-  return (
-    issue?.locationName ||
-    issue?.locationDetails ||
-    issue?.location ||
-    issue?.attributes?.locationName ||
-    issue?.attributes?.locationDetails ||
-    issue?.attributes?.location ||
-    ''
-  );
-}
-
-function getIssueViewNameForNavigator(issue) {
-  var linkedDocument = getPrimaryLinkedDocument(issue);
-
-  if (!linkedDocument) return '-';
-
-  var viewable =
-    linkedDocument?.details?.viewable ||
-    linkedDocument?.viewable ||
-    null;
-
-  return (
-    viewable?.name ||
-    viewable?.displayName ||
-    linkedDocument?.name ||
-    linkedDocument?.displayName ||
-    '-'
-  );
-}
-
-/////////////////////////////////////////////////////////////////////
 // Dispatch events to other extensions
-/////////////////////////////////////////////////////////////////////
 
 function dispatchViewerInstance(model, doc, node, reason) {
   var activeView = getViewableInfo(node);
@@ -1911,22 +1390,16 @@ function getViewableInfo(node) {
   };
 }
 
-/////////////////////////////////////////////////////////////////////
 // Extensions and auth
-/////////////////////////////////////////////////////////////////////
 
 function loadDocumentBrowser() {
   if (!viewer) return;
 
   if (viewer.getExtension('Autodesk.DocumentBrowser')) {
-    console.log('Autodesk.DocumentBrowser already loaded.');
     return;
   }
 
   viewer.loadExtension('Autodesk.DocumentBrowser')
-    .then(function () {
-      console.log('Autodesk.DocumentBrowser loaded.');
-    })
     .catch(function (error) {
       console.warn('Could not load Autodesk.DocumentBrowser:', error);
     });
@@ -1953,4 +1426,12 @@ function getApsToken(callback) {
       console.error(err);
       alert(err.message);
     });
+}
+
+function setViewerActionStatus(message) {
+  var viewerStatus = document.getElementById('viewerActionStatus');
+
+  if (viewerStatus && message) {
+    viewerStatus.textContent = message;
+  }
 }

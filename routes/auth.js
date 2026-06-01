@@ -1,7 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// Authentication routes - 3-legged OAuth
-/////////////////////////////////////////////////////////////////////
-
+// Server routes for Autodesk sign-in, callback, logout, and current user status.
+// Do not put model, issue, or switchback JSON routes here.
 const express = require('express');
 const {
     getAuthorizationUrl,
@@ -15,7 +13,6 @@ let router = express.Router();
 
 router.get('/auth/login', function (req, res) {
     const authUrl = getAuthorizationUrl();
-    console.log('Redirecting to Autodesk OAuth URL:', authUrl);
     res.redirect(authUrl);
 });
 

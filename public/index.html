@@ -19,19 +19,19 @@
 
   <link rel="stylesheet" type="text/css" href="css/w2ui-1.4.min.css" />
   <link href="css/main.css" rel="stylesheet" />
-  <link href="extensions/extensionloader.css" rel="stylesheet" />
+  <link href="css/issue-panel.css" rel="stylesheet" />
 
+  <script src="js/utils/text-utils.js"></script>
+  <script src="js/utils/html-utils.js"></script>
+  <script src="js/utils/date-utils.js"></script>
+  <script src="js/layout/panel-layout.js"></script>
+  <script src="js/viewer/current-view-bar.js"></script>
+  <script src="js/RevitConnection.js"></script>
   <script src="js/Layout.js"></script>
   <script src="js/ApsTree.js"></script>
   <script src="js/ApsViewer.js"></script>
   <script src="/extensions/extensionloader.js"></script>
 
-  <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDBV72JOytVAAXlvey3kGB-XCu4S5XUxOs" type="text/javascript"></script>
-  <script src="extensions/XLSExtension/contents/libraries/Blob.js"></script>
-  <script src="extensions/XLSExtension/contents/libraries/FileSaver.min.js"></script>
-  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.mini.min.js" type="text/javascript"></script>
-  <script src="extensions/XLSExtension/contents/libraries/notify.min.js"></script>
-  <script src="extensions/XLSExtension/contents/libraries/clipboard.min.js"></script>
 </head>
 
 <body>
@@ -72,6 +72,8 @@
 
     <main id="viewerPanel" class="viewer-panel">
       <div class="tobegin"><i class="fas fa-arrow-left"></i>&nbsp;&nbsp;Select an ACC file version to load the viewer.</div>
+      <div id="currentViewBar" class="current-view-bar" hidden></div>
+      <div id="issueViewBar" class="issue-view-bar" hidden></div>
       <div id="apsViewer"></div>
     </main>
 
@@ -131,7 +133,7 @@
               Select a circular issue pin in the viewer.
             </div>
 
-            <div id="issueDetailsContent" class="issue-details-content" style="display:none;">
+            <div id="issueDetailsContent" class="issue-details-content" hidden>
               <div class="issue-thumbnail-wrapper">
                 <div id="issueThumbnailPlaceholder" class="issue-thumbnail-placeholder">
                   Issue thumbnail preview is not available from this payload.
@@ -172,28 +174,6 @@
     </aside>
   </div>
 
-  <div id="extensionlist" style="display:none"></div>
-  <div id="inbuiltextensionlist" style="display:none"></div>
-
-  <div class="modal fade" id="editConfigModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
-    <div class="modal-dialog" role="document">
-      <div class="modal-content">
-        <div class="modal-header">
-          <button type="button" class="close" data-dismiss="modal" aria-label="Cancel">
-            <span aria-hidden="true">&times;</span>
-          </button>
-          <h4 class="modal-title" id="myModalLabel">Edit Extension Options</h4>
-        </div>
-        <div class="modal-body">
-          <textarea type="text" id="editextensionconfig" class="form-control"></textarea>
-        </div>
-        <div class="modal-footer">
-          <span><a id="learnmore" target="_blank" href="">Learn more</a></span>
-          <button type="button" class="btn btn-success" id="saveconfig" data-dismiss="modal" aria-label="Cancel">Apply</button>
-        </div>
-      </div>
-    </div>
-  </div>
 </body>
 
 </html>

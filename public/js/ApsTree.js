@@ -1,6 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// ACC project/file tree using 3-legged Autodesk user access
-/////////////////////////////////////////////////////////////////////
+// Responsible for the ACC hub/project/file tree on the left side.
+// Do not put viewer rendering, issue table UI, or switchback JSON code here.
 
 $(document).ready(function () {
   initialiseAuthState();
@@ -30,7 +29,7 @@ function initialiseAuthState() {
 function renderLoginPanel() {
   $('#appBuckets').html(
     '<div class="auth-box">' +
-      '<p>Sign in with Autodesk to browse ACC hubs, projects, folders, and file versions using your own permissions.</p>' +
+      '<p>Sign in with Autodesk Forma Id to browse ACC hubs, projects, folders, and file versions.</p>' +
       '<a class="btn btn-primary btn-block" href="/auth/login">Login with Autodesk</a>' +
     '</div>'
   );
@@ -92,6 +91,16 @@ function prepareAppBucketTree() {
       item: { icon: 'glyphicon glyphicon-file' },
       version: { icon: 'glyphicon glyphicon-eye-open' }
     },
+    sort: function (a, b) {
+      var nodeA = this.get_node(a);
+      var nodeB = this.get_node(b);
+
+      if (nodeA.type === 'version' && nodeB.type === 'version') {
+        return Number(nodeB.data?.versionNumber || 0) - Number(nodeA.data?.versionNumber || 0);
+      }
+
+      return String(nodeA.text || '').localeCompare(String(nodeB.text || ''), undefined, { numeric: true });
+    },
     plugins: ['types', 'sort', 'wholerow']
   })
     .on('activate_node.jstree', function (evt, data) {
@@ -99,14 +108,20 @@ function prepareAppBucketTree() {
 
       if (data.node.type === 'version') {
         loadVersionNode(data.node);
+      } else if (data.node.type === 'item') {
+        loadLatestItemVersion(data.node);
       }
     });
 }
 
 function loadVersionNode(node) {
-  var data = node.data || {};
+  loadVersionData(node, node && node.text);
+}
+
+function loadVersionData(versionNode, fallbackName) {
+  var data = versionNode.data || {};
   var urn = data.viewerUrn;
-  var name = data.name || node.text;
+  var name = data.name || fallbackName || versionNode.text;
 
   if (!urn) {
     alert('This version does not expose a viewer URN. Open the file once in ACC, confirm it is viewable, and try again.');
@@ -122,11 +137,36 @@ function loadVersionNode(node) {
     hubId: data.hubId || null,
     projectId: data.projectId || null,
     itemId: data.itemId || null,
-    versionId: data.versionId || node.id || null,
-    treeText: node.text,
+    versionId: data.versionId || versionNode.id || null,
+    versionNumber: data.versionNumber || null,
+    treeText: versionNode.text,
     webViewUrl: data.webViewUrl || null
   };
 
   window.currentModelInfo = modelInfo;
   launchViewer(urn, name, modelInfo);
+}
+
+function loadLatestItemVersion(node) {
+  var tree = $('#appBuckets').jstree(true);
+  var requestData = buildNodeData(node);
+
+  if (tree) {
+    tree.set_text(node, node.text);
+  }
+
+  $.get('/api/models/acc-tree', requestData)
+    .done(function (versions) {
+      var latestVersion = Array.isArray(versions) ? versions[0] : null;
+
+      if (!latestVersion) {
+        alert('No viewable versions were found for this file.');
+        return;
+      }
+
+      loadVersionData(latestVersion, node.text);
+    })
+    .fail(function () {
+      alert('Could not load the latest version for this file.');
+    });
 }

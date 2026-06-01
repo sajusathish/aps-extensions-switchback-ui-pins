@@ -1,8 +1,5 @@
-/////////////////////////////////////////////////////////////////////
-// APS helper service for 3-legged OAuth and ACC Data Management access
-// Includes a separate 2-legged helper for server-side account/company/role lookups.
-/////////////////////////////////////////////////////////////////////
-
+// Shared Autodesk Platform Services helpers for auth tokens and APS HTTP requests.
+// Server routes should call these helpers instead of building auth requests themselves.
 const {
     APS_CLIENT_ID,
     APS_CLIENT_SECRET,
@@ -14,6 +11,7 @@ const APS_API_BASE = 'https://developer.api.autodesk.com';
 
 const SCOPES = [
     'data:read',
+    'data:write',
     'viewables:read',
     'account:read',
     'offline_access'
@@ -190,7 +188,11 @@ async function apsFetch(req, url, options = {}) {
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
-        const message = body?.developerMessage || body?.error || `APS request failed: ${response.status}`;
+        const message =
+            body?.developerMessage ||
+            body?.title ||
+            body?.error ||
+            `APS request failed: ${response.status}`;
         const error = new Error(message);
         error.status = response.status;
         error.details = body;
@@ -215,7 +217,11 @@ async function apsFetchTwoLegged(url, options = {}) {
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
-        const message = body?.developerMessage || body?.error || `2-legged APS request failed: ${response.status}`;
+        const message =
+            body?.developerMessage ||
+            body?.title ||
+            body?.error ||
+            `2-legged APS request failed: ${response.status}`;
         const error = new Error(message);
         error.status = response.status;
         error.details = body;
