@@ -1065,6 +1065,164 @@
   min-width: 100%;
 }
 
+.issueDashboardPanel {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #d8dee8;
+  background: linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%);
+}
+
+.issueDashboardToggle {
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  display: grid;
+  grid-template-columns: 28px max-content 1fr 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  text-align: left;
+}
+
+.issueDashboardToggle:hover {
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.issueDashboardToggle .glyphicon-stats {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
+}
+
+.issueDashboardTitle {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.issueDashboardSummary {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.issueDashboardBody {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.issueDashboardCard {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  padding: 12px;
+}
+
+.issueDashboardCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.issueDashboardCardTitle {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.issueDashboardCardMeta {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.issueDashboardClearButton {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 9px;
+}
+
+.issueDashboardChartWrap {
+  height: 150px;
+  min-width: 0;
+}
+
+.issueDashboardLegend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.issueDashboardLegendItem {
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 11px;
+}
+
+.issueDashboardLegendItem:hover,
+.issueDashboardLegendItem.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.issueDashboardLegendColour {
+  width: 8px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.issueDashboardLegendLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issueDashboardLegendCount {
+  font-weight: 900;
+}
+
+.issueDashboardLoading,
+.issueDashboardEmpty {
+  grid-column: 1 / -1;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 18px;
+  text-align: center;
+}
+
 .issueTableColumnButton {
   width: 100%;
   min-height: 28px;

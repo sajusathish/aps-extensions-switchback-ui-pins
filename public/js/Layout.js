@@ -28,6 +28,8 @@
   var issueTableColumnOrder = [];
   var issueTableColumnOrderKey = '';
   var issueTablePopoutWindow = null;
+  var issueDashboardExpanded = false;
+  var issueDashboardChartInstances = [];
   var issueTableState = {
     sortKey: '',
     sortDirection: 'asc',
@@ -519,6 +521,27 @@
     }
   }
 
+  function destroyIssueDashboardCharts(targetDocument) {
+    issueDashboardChartInstances = issueDashboardChartInstances.filter(function (item) {
+      if (item.document !== targetDocument) return true;
+
+      try {
+        item.chart.destroy();
+      } catch (error) {
+        // Chart may already be gone when the pop-out window is closing.
+      }
+
+      return false;
+    });
+  }
+
+  function addIssueDashboardChart(targetDocument, chart) {
+    issueDashboardChartInstances.push({
+      document: targetDocument,
+      chart: chart
+    });
+  }
+
   function setIssueTableColumnWidth(columnKey, width) {
     var cleanWidth = Math.max(56, Math.round(Number(width) || 0));
 
@@ -844,6 +867,107 @@
     });
   }
 
+  function getIssueDashboardColumns() {
+    var columns = [
+      { key: 'status', label: 'Status', chartType: 'doughnut' },
+      { key: 'assignedTo', label: 'Assigned to', chartType: 'bar' }
+    ];
+
+    (issueSettingsCache?.customAttributeDefinitions || []).forEach(function (definition) {
+      if (!definition?.id || !definition?.title) return;
+      if (getCustomAttributeTableType(definition) !== 'values') return;
+
+      columns.push({
+        key: getCustomAttributeColumnKey(definition.id),
+        label: definition.title,
+        chartType: 'bar'
+      });
+    });
+
+    return columns;
+  }
+
+  function getIssueDashboardItems(issues, columnKey) {
+    var countsByKey = {};
+    var labelsByKey = {};
+
+    (issues || []).forEach(function (issue) {
+      var label = getIssueTableOptionLabel(getIssueTableValue(issue, columnKey));
+      var key = getIssueTableOptionKey(label);
+
+      countsByKey[key] = (countsByKey[key] || 0) + 1;
+      labelsByKey[key] = label;
+    });
+
+    return Object.keys(countsByKey).map(function (key) {
+      return {
+        key: key,
+        label: labelsByKey[key],
+        count: countsByKey[key]
+      };
+    }).sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label, undefined, { numeric: true });
+    }).slice(0, 8);
+  }
+
+  function getIssueDashboardMetrics(issues) {
+    return getIssueDashboardColumns().map(function (column) {
+      return {
+        key: column.key,
+        label: column.label,
+        chartType: column.chartType,
+        items: getIssueDashboardItems(issues, column.key)
+      };
+    }).filter(function (metric) {
+      return metric.items.length > 0;
+    });
+  }
+
+  function getIssueDashboardColour(index) {
+    var colours = [
+      '#2563eb',
+      '#f59e0b',
+      '#10b981',
+      '#8b5cf6',
+      '#ef4444',
+      '#06b6d4',
+      '#64748b',
+      '#ec4899'
+    ];
+
+    return colours[index % colours.length];
+  }
+
+  function isIssueDashboardFilterActive(columnKey, valueKey) {
+    var selectedValues = issueTableState.filters[columnKey];
+    return Array.isArray(selectedValues) &&
+      selectedValues.length === 1 &&
+      selectedValues[0] === valueKey;
+  }
+
+  function applyIssueDashboardFilter(columnKey, valueKey) {
+    if (!columnKey || !valueKey) return;
+
+    if (isIssueDashboardFilterActive(columnKey, valueKey)) {
+      delete issueTableState.filters[columnKey];
+    } else {
+      issueTableState.filters[columnKey] = [valueKey];
+    }
+
+    issueTableState.openColumnKey = '';
+    issueTableState.searchText = '';
+    issueTableState.customColumnMenuOpen = false;
+    renderIssueTable(loadedIssues, selectedIssueTableId);
+  }
+
+  function clearIssueDashboardFilter(columnKey) {
+    if (!columnKey) return;
+
+    delete issueTableState.filters[columnKey];
+    renderIssueTable(loadedIssues, selectedIssueTableId);
+  }
+
   function getIssueViewType(issue) {
     var linkedDocuments = Array.isArray(issue?.linkedDocuments)
       ? issue.linkedDocuments
@@ -947,6 +1071,150 @@
           ? 'glyphicon glyphicon-resize-small'
           : 'glyphicon glyphicon-new-window';
       }
+    });
+  }
+
+  function renderIssueDashboard(targetDocument, rows, quickFilteredCount, totalCount) {
+    if (!isIssueTablePopoutDocument(targetDocument)) return;
+
+    var panel = getIssueTableElement(targetDocument, 'issueDashboardPanel');
+    if (!panel) return;
+
+    destroyIssueDashboardCharts(targetDocument);
+
+    var metrics = getIssueDashboardMetrics(rows);
+    var isExpanded = issueDashboardExpanded === true;
+
+    panel.classList.toggle('expanded', isExpanded);
+    panel.innerHTML =
+      '<button id="issueDashboardToggle" class="issueDashboardToggle" type="button" aria-expanded="' + String(isExpanded) + '">' +
+        '<span class="glyphicon glyphicon-stats" aria-hidden="true"></span>' +
+        '<span class="issueDashboardTitle">Issues dashboard</span>' +
+        '<span class="issueDashboardSummary">' + escapeHtml(rows.length + ' shown from ' + totalCount + ' issues') + '</span>' +
+        '<span class="glyphicon ' + (isExpanded ? 'glyphicon-chevron-up' : 'glyphicon-chevron-down') + '" aria-hidden="true"></span>' +
+      '</button>' +
+      (
+        isExpanded
+          ? '<div id="issueDashboardBody" class="issueDashboardBody">' +
+              (
+                metrics.length
+                  ? metrics.map(renderIssueDashboardCard).join('')
+                  : '<div class="issueDashboardEmpty">No value fields are available for the current issue set.</div>'
+              ) +
+            '</div>'
+          : ''
+      );
+
+    if (isExpanded && metrics.length) {
+      createIssueDashboardCharts(targetDocument, metrics);
+    }
+  }
+
+  function renderIssueDashboardCard(metric, metricIndex) {
+    var hasActiveFilter = Array.isArray(issueTableState.filters[metric.key]);
+
+    return '<section class="issueDashboardCard" data-issue-dashboard-card="' + escapeAttribute(metric.key) + '">' +
+      '<div class="issueDashboardCardHeader">' +
+        '<div>' +
+          '<div class="issueDashboardCardTitle">' + escapeHtml(metric.label) + '</div>' +
+          '<div class="issueDashboardCardMeta">' + escapeHtml(metric.items.length + ' values') + '</div>' +
+        '</div>' +
+        (hasActiveFilter
+          ? '<button class="issueDashboardClearButton" type="button" data-issue-dashboard-clear="' + escapeAttribute(metric.key) + '">Clear</button>'
+          : '') +
+      '</div>' +
+      '<div class="issueDashboardChartWrap">' +
+        '<canvas data-issue-dashboard-chart="' + metricIndex + '"></canvas>' +
+      '</div>' +
+      '<div class="issueDashboardLegend">' +
+        metric.items.map(function (item, index) {
+          var activeClass = isIssueDashboardFilterActive(metric.key, item.key) ? ' active' : '';
+
+          return '<button class="issueDashboardLegendItem' + activeClass + '" type="button" data-issue-dashboard-filter-key="' + escapeAttribute(metric.key) + '" data-issue-dashboard-filter-value="' + escapeAttribute(item.key) + '">' +
+            '<span class="issueDashboardLegendColour" style="background:' + escapeAttribute(getIssueDashboardColour(index)) + '"></span>' +
+            '<span class="issueDashboardLegendLabel">' + escapeHtml(item.label) + '</span>' +
+            '<span class="issueDashboardLegendCount">' + escapeHtml(item.count) + '</span>' +
+          '</button>';
+        }).join('') +
+      '</div>' +
+    '</section>';
+  }
+
+  function createIssueDashboardCharts(targetDocument, metrics) {
+    var targetWindow = targetDocument.defaultView || window;
+    var ChartConstructor = targetWindow.Chart;
+    var body = getIssueTableElement(targetDocument, 'issueDashboardBody');
+
+    if (!ChartConstructor) {
+      if (body) {
+        body.insertAdjacentHTML(
+          'afterbegin',
+          '<div class="issueDashboardLoading">Loading dashboard charts...</div>'
+        );
+      }
+
+      return;
+    }
+
+    targetDocument.querySelectorAll('[data-issue-dashboard-chart]').forEach(function (canvas) {
+      var metricIndex = Number(canvas.getAttribute('data-issue-dashboard-chart'));
+      var metric = metrics[metricIndex];
+      if (!metric) return;
+
+      var colours = metric.items.map(function (item, index) {
+        return getIssueDashboardColour(index);
+      });
+      var labels = metric.items.map(function (item) {
+        return item.label;
+      });
+      var values = metric.items.map(function (item) {
+        return item.count;
+      });
+      var chart = new ChartConstructor(canvas, {
+        type: metric.chartType,
+        data: {
+          labels: labels,
+          datasets: [{
+            label: metric.label,
+            data: values,
+            backgroundColor: colours,
+            borderColor: '#ffffff',
+            borderWidth: 2,
+            borderRadius: metric.chartType === 'bar' ? 6 : 0
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function (context) {
+                  var parsedValue = typeof context.parsed === 'object'
+                    ? context.parsed.y
+                    : context.parsed;
+
+                  return context.label + ': ' + parsedValue;
+                }
+              }
+            }
+          },
+          scales: metric.chartType === 'bar'
+            ? {
+                x: { ticks: { display: false }, grid: { display: false } },
+                y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: 'rgba(148, 163, 184, 0.22)' } }
+              }
+            : {},
+          onClick: function (event, elements) {
+            if (!elements || !elements.length) return;
+            var item = metric.items[elements[0].index];
+            if (item) applyIssueDashboardFilter(metric.key, item.key);
+          }
+        }
+      });
+
+      addIssueDashboardChart(targetDocument, chart);
     });
   }
 
@@ -2175,6 +2443,8 @@
       customColumnsButton.classList.toggle('active', issueTableState.customColumnMenuOpen || issueTableCustomColumnIds.length > 0);
     }
 
+    renderIssueDashboard(targetDocument, rows, quickFilteredIssues.length, total);
+
     if (count) {
       count.textContent = rows.length === total
         ? total + ' issues'
@@ -2934,9 +3204,11 @@
           '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.4.1/css/bootstrap.min.css">' +
           '<link rel="stylesheet" href="' + window.location.origin + '/css/main.css">' +
           '<link rel="stylesheet" href="' + window.location.origin + '/css/issue-panel.css">' +
+          '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>' +
         '</head>' +
         '<body class="issueTablePopoutBody">' +
           '<section id="issueTablePanel" class="issueTablePanel issueTablePanelPopout">' +
+            '<div id="issueDashboardPanel" class="issueDashboardPanel"></div>' +
             '<div class="issueTableHeader">' +
               '<span>Project issues</span>' +
               '<div class="issueTableHeaderActions">' +
@@ -2987,11 +3259,19 @@
 
     bindIssueTableEvents(childWindow.document);
     childWindow.addEventListener('beforeunload', function () {
+      destroyIssueDashboardCharts(childWindow.document);
       issueTablePopoutWindow = null;
       syncIssueTablePopoutButtons();
     });
 
+    childWindow.addEventListener('resize', function () {
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+    });
+
     renderIssueTable(loadedIssues, selectedIssueTableId);
+    childWindow.setTimeout(function () {
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+    }, 600);
     childWindow.focus();
     setStatus('Project issue table opened in a separate window.');
   }
@@ -3022,6 +3302,8 @@
   }
 
   function handleIssueTableClick(event) {
+    if (handleIssueDashboardClick(event)) return true;
+
     var issueTableColumnButton = event.target?.closest?.('[data-issue-table-column]');
     if (issueTableColumnButton) {
       event.preventDefault();
@@ -3122,6 +3404,35 @@
         }));
       }
 
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleIssueDashboardClick(event) {
+    var dashboardToggle = event.target?.closest?.('#issueDashboardToggle');
+    if (dashboardToggle) {
+      event.preventDefault();
+      issueDashboardExpanded = !issueDashboardExpanded;
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var dashboardClear = event.target?.closest?.('[data-issue-dashboard-clear]');
+    if (dashboardClear) {
+      event.preventDefault();
+      clearIssueDashboardFilter(dashboardClear.getAttribute('data-issue-dashboard-clear'));
+      return true;
+    }
+
+    var dashboardFilter = event.target?.closest?.('[data-issue-dashboard-filter-key]');
+    if (dashboardFilter) {
+      event.preventDefault();
+      applyIssueDashboardFilter(
+        dashboardFilter.getAttribute('data-issue-dashboard-filter-key'),
+        dashboardFilter.getAttribute('data-issue-dashboard-filter-value')
+      );
       return true;
     }
 
