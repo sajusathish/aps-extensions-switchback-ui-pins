@@ -27,6 +27,7 @@
   var issueTableColumnWidths = {};
   var issueTableColumnOrder = [];
   var issueTableColumnOrderKey = '';
+  var issueTablePopoutWindow = null;
   var issueTableState = {
     sortKey: '',
     sortDirection: 'asc',
@@ -418,6 +419,106 @@
     return null;
   }
 
+  function getPreferredIssueTableColumnWidth(column) {
+    if (!column) return 140;
+    if (column.key === 'displayId') return 78;
+    if (column.key === 'title') return 290;
+    if (column.key === 'status') return 96;
+    if (column.key === 'assignedTo') return 190;
+    if (column.key === 'dueDate') return 126;
+    if (column.key === 'createdBy') return 170;
+    if (column.type === 'date') return 126;
+    if (column.type === 'number') return 120;
+    return 165;
+  }
+
+  function getMinimumIssueTableColumnWidth(column) {
+    if (!column) return 96;
+    if (column.key === 'displayId') return 72;
+    if (column.key === 'title') return 210;
+    if (column.key === 'status') return 86;
+    if (column.key === 'assignedTo') return 145;
+    if (column.key === 'dueDate') return 112;
+    if (column.key === 'createdBy') return 135;
+    if (column.type === 'date') return 112;
+    if (column.type === 'number') return 96;
+    return 125;
+  }
+
+  function getIssueTableRenderColumnWidths(columns, targetDocument) {
+    var widths = {};
+
+    if (!isIssueTablePopoutDocument(targetDocument)) {
+      columns.forEach(function (column) {
+        widths[column.key] = getIssueTableColumnWidth(column.key);
+      });
+      return widths;
+    }
+
+    var wrapper = targetDocument.querySelector('.issueTableWrapper');
+    var availableWidth = Math.max(720, (wrapper?.clientWidth || targetDocument.defaultView?.innerWidth || 980) - 2);
+    var preferredWidths = {};
+    var minimumWidths = {};
+    var preferredTotal = 0;
+    var minimumTotal = 0;
+
+    columns.forEach(function (column) {
+      var preferred = getIssueTableColumnWidth(column.key) || getPreferredIssueTableColumnWidth(column);
+      var minimum = Math.min(preferred, getMinimumIssueTableColumnWidth(column));
+
+      preferredWidths[column.key] = preferred;
+      minimumWidths[column.key] = minimum;
+      preferredTotal += preferred;
+      minimumTotal += minimum;
+    });
+
+    if (preferredTotal <= availableWidth) {
+      return preferredWidths;
+    }
+
+    if (minimumTotal >= availableWidth) {
+      return minimumWidths;
+    }
+
+    var shrinkableTotal = preferredTotal - minimumTotal;
+    var shrinkAmount = preferredTotal - availableWidth;
+
+    columns.forEach(function (column) {
+      var preferred = preferredWidths[column.key];
+      var minimum = minimumWidths[column.key];
+      var columnShrink = shrinkableTotal > 0
+        ? ((preferred - minimum) / shrinkableTotal) * shrinkAmount
+        : 0;
+
+      widths[column.key] = Math.round(preferred - columnShrink);
+    });
+
+    return widths;
+  }
+
+  function isIssueTablePopoutDocument(targetDocument) {
+    return Boolean(targetDocument?.body?.classList?.contains('issueTablePopoutBody'));
+  }
+
+  function setIssueTableRenderedWidth(targetDocument, widths) {
+    if (!targetDocument) return;
+
+    var table = targetDocument.querySelector('.issueTable');
+    if (!table) return;
+
+    var totalWidth = Object.keys(widths).reduce(function (sum, key) {
+      return sum + (Number(widths[key]) || 0);
+    }, 0);
+
+    if (isIssueTablePopoutDocument(targetDocument)) {
+      table.style.width = totalWidth + 'px';
+      table.style.minWidth = '100%';
+    } else {
+      table.style.width = '';
+      table.style.minWidth = '';
+    }
+  }
+
   function setIssueTableColumnWidth(columnKey, width) {
     var cleanWidth = Math.max(56, Math.round(Number(width) || 0));
 
@@ -807,16 +908,64 @@
       '</td>';
   }
 
-  function renderIssueTableHead() {
-    var head = document.getElementById('issueTableHead');
+  function forEachIssueTableDocument(callback) {
+    callback(document);
+
+    if (isIssueTablePoppedOut()) {
+      callback(issueTablePopoutWindow.document);
+    }
+  }
+
+  function getIssueTableElement(targetDocument, id) {
+    return targetDocument ? targetDocument.getElementById(id) : null;
+  }
+
+  function isIssueTablePoppedOut() {
+    return Boolean(issueTablePopoutWindow && !issueTablePopoutWindow.closed);
+  }
+
+  function getIssueTablePopoutButtonHtml() {
+    return '<button id="issueTablePopoutButton" class="issueTableHeaderButton" type="button" title="Pop out project issue table" aria-label="Pop out project issue table">' +
+      '<span class="glyphicon glyphicon-new-window"></span>' +
+    '</button>';
+  }
+
+  function syncIssueTablePopoutButtons() {
+    forEachIssueTableDocument(function (targetDocument) {
+      var button = getIssueTableElement(targetDocument, 'issueTablePopoutButton');
+      if (!button) return;
+
+      var poppedOut = isIssueTablePoppedOut();
+      var icon = button.querySelector('.glyphicon');
+
+      button.classList.toggle('active', poppedOut);
+      button.title = poppedOut ? 'Dock project issue table back' : 'Pop out project issue table';
+      button.setAttribute('aria-label', button.title);
+
+      if (icon) {
+        icon.className = poppedOut
+          ? 'glyphicon glyphicon-resize-small'
+          : 'glyphicon glyphicon-new-window';
+      }
+    });
+  }
+
+  function renderIssueTableHead(targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var head = getIssueTableElement(targetDocument, 'issueTableHead');
     if (!head) return;
 
-    head.innerHTML = getIssueTableColumns().map(function (column) {
+    var columns = getIssueTableColumns();
+    var columnWidths = getIssueTableRenderColumnWidths(columns, targetDocument);
+    setIssueTableRenderedWidth(targetDocument, columnWidths);
+
+    head.innerHTML = columns.map(function (column) {
       var isSorted = issueTableState.sortKey === column.key;
       var isFiltered = hasIssueTableFilter(column.key);
       var classes = ['issueTableColumnButton'];
       var sortMarker = '';
-      var width = getIssueTableColumnWidth(column.key);
+      var width = columnWidths[column.key];
       var widthStyle = width ? ' style="width:' + width + 'px; min-width:' + width + 'px;"' : '';
 
       if (isSorted) {
@@ -840,8 +989,10 @@
     }).join('');
   }
 
-  function renderIssueTableColumnMenu() {
-    var menu = document.getElementById('issueTableColumnMenu');
+  function renderIssueTableColumnMenu(targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var menu = getIssueTableElement(targetDocument, 'issueTableColumnMenu');
     if (!menu) return;
 
     var column = getIssueTableColumn(issueTableState.openColumnKey);
@@ -929,29 +1080,34 @@
       filterHtml +
       ((column.type === 'text' || column.type === 'date' || column.type === 'number') ? '<div class="issueTableMenuActions compact"><button type="button" data-issue-table-action="reset-filter">Reset filter</button></div>' : '');
 
-    positionIssueTableColumnMenu(menu, column.key);
+    positionIssueTableColumnMenu(menu, column.key, targetDocument);
   }
 
-  function positionIssueTableColumnMenu(menu, columnKey) {
-    var button = Array.from(document.querySelectorAll('[data-issue-table-column]')).find(function (item) {
+  function positionIssueTableColumnMenu(menu, columnKey, targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var targetWindow = targetDocument.defaultView || window;
+    var button = Array.from(targetDocument.querySelectorAll('[data-issue-table-column]')).find(function (item) {
       return item.getAttribute('data-issue-table-column') === columnKey;
     });
 
     if (!button) return;
 
     var rect = button.getBoundingClientRect();
-    var width = Math.min(320, window.innerWidth - 24);
-    var left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
-    var top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+    var width = Math.min(320, targetWindow.innerWidth - 24);
+    var left = Math.min(Math.max(12, rect.left), targetWindow.innerWidth - width - 12);
+    var top = Math.min(rect.bottom + 6, targetWindow.innerHeight - 80);
 
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
     menu.style.width = width + 'px';
-    menu.style.maxHeight = Math.max(220, window.innerHeight - top - 12) + 'px';
+    menu.style.maxHeight = Math.max(220, targetWindow.innerHeight - top - 12) + 'px';
   }
 
-  function renderIssueTableCustomColumnsMenu() {
-    var menu = document.getElementById('issueTableCustomColumnsMenu');
+  function renderIssueTableCustomColumnsMenu(targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var menu = getIssueTableElement(targetDocument, 'issueTableCustomColumnsMenu');
     if (!menu) return;
 
     if (!issueTableState.customColumnMenuOpen) {
@@ -988,22 +1144,25 @@
           : '<div class="issueTableMenuEmpty">No custom attributes found in issue settings.</div>'
       );
 
-    positionIssueTableCustomColumnsMenu(menu);
+    positionIssueTableCustomColumnsMenu(menu, targetDocument);
   }
 
-  function positionIssueTableCustomColumnsMenu(menu) {
-    var button = document.getElementById('issueTableCustomColumnsButton');
+  function positionIssueTableCustomColumnsMenu(menu, targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var targetWindow = targetDocument.defaultView || window;
+    var button = getIssueTableElement(targetDocument, 'issueTableCustomColumnsButton');
     if (!button) return;
 
     var rect = button.getBoundingClientRect();
-    var width = Math.min(340, window.innerWidth - 24);
-    var left = Math.min(Math.max(12, rect.right - width), window.innerWidth - width - 12);
-    var top = Math.min(rect.bottom + 6, window.innerHeight - 80);
+    var width = Math.min(340, targetWindow.innerWidth - 24);
+    var left = Math.min(Math.max(12, rect.right - width), targetWindow.innerWidth - width - 12);
+    var top = Math.min(rect.bottom + 6, targetWindow.innerHeight - 80);
 
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
     menu.style.width = width + 'px';
-    menu.style.maxHeight = Math.max(240, window.innerHeight - top - 12) + 'px';
+    menu.style.maxHeight = Math.max(240, targetWindow.innerHeight - top - 12) + 'px';
   }
 
   function setIssueTableFilterValue(key, valueKey, checked) {
@@ -1972,6 +2131,7 @@
           '<button id="issueTableRefreshButton" class="issueTableHeaderButton" type="button" title="Refresh issues from ACC/Forma">' +
             '<span class="glyphicon glyphicon-refresh"></span>' +
           '</button>' +
+          getIssueTablePopoutButtonHtml() +
           '<button id="issueTableCustomColumnsButton" class="issueTableHeaderButton" type="button" title="Choose custom attribute columns">' +
             '<span class="glyphicon glyphicon-cog"></span>' +
           '</button>' +
@@ -1982,23 +2142,34 @@
       '<div class="issueTableWrapper"><table class="issueTable"><thead><tr id="issueTableHead"></tr></thead><tbody id="issueTableBody"><tr><td colspan="6">No issues loaded.</td></tr></tbody></table></div>';
     issueDetailsPanel.parentNode.insertBefore(panel, issueDetailsPanel);
     renderIssueTableHead();
+    syncIssueTablePopoutButtons();
   }
 
   function renderIssueTable(issues, selectedIssueIdForRender) {
-    var tbody = document.getElementById('issueTableBody');
+    forEachIssueTableDocument(function (targetDocument) {
+      renderIssueTableInDocument(issues, selectedIssueIdForRender, targetDocument);
+    });
+  }
+
+  function renderIssueTableInDocument(issues, selectedIssueIdForRender, targetDocument) {
+    targetDocument = targetDocument || document;
+
+    var tbody = getIssueTableElement(targetDocument, 'issueTableBody');
     if (!tbody) return;
 
-    renderIssueTableHead();
-    renderIssueTableColumnMenu();
-    renderIssueTableCustomColumnsMenu();
+    renderIssueTableHead(targetDocument);
+    renderIssueTableColumnMenu(targetDocument);
+    renderIssueTableCustomColumnsMenu(targetDocument);
+    syncIssueTablePopoutButtons();
 
     var quickFilteredIssues = getQuickFilteredIssues(issues);
     var rows = getIssueTableRows(quickFilteredIssues);
     var total = (issues || []).length;
-    var count = document.getElementById('issueTableCount');
+    var count = getIssueTableElement(targetDocument, 'issueTableCount');
     var columns = getIssueTableColumns();
+    var columnWidths = getIssueTableRenderColumnWidths(columns, targetDocument);
     var colspan = columns.length;
-    var customColumnsButton = document.getElementById('issueTableCustomColumnsButton');
+    var customColumnsButton = getIssueTableElement(targetDocument, 'issueTableCustomColumnsButton');
 
     if (customColumnsButton) {
       customColumnsButton.classList.toggle('active', issueTableState.customColumnMenuOpen || issueTableCustomColumnIds.length > 0);
@@ -2031,7 +2202,7 @@
       var rowClass = isActive ? ' class="active"' : '';
       var cells = columns.map(function (column) {
         var value = getIssueTableValue(issue, column.key);
-        var width = getIssueTableColumnWidth(column.key);
+        var width = columnWidths[column.key];
         var widthStyle = width ? ' style="width:' + width + 'px; min-width:' + width + 'px;"' : '';
 
         if (column.key === 'status') {
@@ -2753,6 +2924,376 @@
     );
   }
 
+  function getIssueTablePopoutHtml() {
+    return '<!DOCTYPE html>' +
+      '<html>' +
+        '<head>' +
+          '<title>Project issues</title>' +
+          '<meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+          '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.4.1/css/bootstrap.min.css">' +
+          '<link rel="stylesheet" href="' + window.location.origin + '/css/main.css">' +
+          '<link rel="stylesheet" href="' + window.location.origin + '/css/issue-panel.css">' +
+        '</head>' +
+        '<body class="issueTablePopoutBody">' +
+          '<section id="issueTablePanel" class="issueTablePanel issueTablePanelPopout">' +
+            '<div class="issueTableHeader">' +
+              '<span>Project issues</span>' +
+              '<div class="issueTableHeaderActions">' +
+                '<span id="issueTableCount" class="issueTableCount">No issues</span>' +
+                '<button id="issueTableRefreshButton" class="issueTableHeaderButton" type="button" title="Refresh issues from ACC/Forma">' +
+                  '<span class="glyphicon glyphicon-refresh"></span>' +
+                '</button>' +
+                getIssueTablePopoutButtonHtml() +
+                '<button id="issueTableCustomColumnsButton" class="issueTableHeaderButton" type="button" title="Choose custom attribute columns">' +
+                  '<span class="glyphicon glyphicon-cog"></span>' +
+                '</button>' +
+              '</div>' +
+            '</div>' +
+            '<div id="issueTableCustomColumnsMenu" class="issueTableCustomColumnsMenu" hidden></div>' +
+            '<div id="issueTableColumnMenu" class="issueTableColumnMenu" hidden></div>' +
+            '<div class="issueTableWrapper"><table class="issueTable"><thead><tr id="issueTableHead"></tr></thead><tbody id="issueTableBody"><tr><td colspan="6">No issues loaded.</td></tr></tbody></table></div>' +
+          '</section>' +
+        '</body>' +
+      '</html>';
+  }
+
+  function toggleIssueTablePopout() {
+    if (isIssueTablePoppedOut()) {
+      dockIssueTablePopout();
+      return;
+    }
+
+    openIssueTablePopout();
+  }
+
+  function openIssueTablePopout() {
+    var popoutWidth = getIssueTablePopoutDefaultWidth();
+    var popoutHeight = getIssueTablePopoutDefaultHeight();
+    var left = Math.max(40, Math.round(((window.screen?.availWidth || popoutWidth) - popoutWidth) / 2));
+    var top = Math.max(40, Math.round(((window.screen?.availHeight || popoutHeight) - popoutHeight) / 2));
+    var features = 'popup=yes,width=' + popoutWidth + ',height=' + popoutHeight + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes';
+    var childWindow = window.open('', 'hksProjectIssuesTable', features);
+
+    if (!childWindow) {
+      setStatus('Pop-up was blocked. Allow pop-ups for this app to use the issue table window.');
+      return;
+    }
+
+    issueTablePopoutWindow = childWindow;
+    childWindow.document.open();
+    childWindow.document.write(getIssueTablePopoutHtml());
+    childWindow.document.close();
+
+    bindIssueTableEvents(childWindow.document);
+    childWindow.addEventListener('beforeunload', function () {
+      issueTablePopoutWindow = null;
+      syncIssueTablePopoutButtons();
+    });
+
+    renderIssueTable(loadedIssues, selectedIssueTableId);
+    childWindow.focus();
+    setStatus('Project issue table opened in a separate window.');
+  }
+
+  function getIssueTablePopoutDefaultWidth() {
+    var columns = getIssueTableColumns();
+    var preferredWidth = columns.reduce(function (sum, column) {
+      return sum + getPreferredIssueTableColumnWidth(column);
+    }, 0) + 48;
+    var availableWidth = window.screen?.availWidth || 1200;
+
+    return Math.round(Math.min(Math.max(980, preferredWidth), Math.max(980, availableWidth - 90)));
+  }
+
+  function getIssueTablePopoutDefaultHeight() {
+    var availableHeight = window.screen?.availHeight || 760;
+    return Math.round(Math.min(760, Math.max(620, availableHeight - 120)));
+  }
+
+  function dockIssueTablePopout() {
+    if (issueTablePopoutWindow && !issueTablePopoutWindow.closed) {
+      issueTablePopoutWindow.close();
+    }
+
+    issueTablePopoutWindow = null;
+    renderIssueTable(loadedIssues, selectedIssueTableId);
+    setStatus('Project issue table docked back in the main window.');
+  }
+
+  function handleIssueTableClick(event) {
+    var issueTableColumnButton = event.target?.closest?.('[data-issue-table-column]');
+    if (issueTableColumnButton) {
+      event.preventDefault();
+      var columnKey = issueTableColumnButton.getAttribute('data-issue-table-column') || '';
+      issueTableState.openColumnKey = issueTableState.openColumnKey === columnKey ? '' : columnKey;
+      issueTableState.searchText = '';
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    if (event.target?.closest?.('#issueTableRefreshButton')) {
+      event.preventDefault();
+      refreshIssuesFromAcc();
+      return true;
+    }
+
+    if (event.target?.closest?.('#issueTablePopoutButton')) {
+      event.preventDefault();
+      toggleIssueTablePopout();
+      return true;
+    }
+
+    var issueTableMenuAction = event.target?.closest?.('[data-issue-table-action]');
+    if (issueTableMenuAction) {
+      event.preventDefault();
+      var menu = issueTableMenuAction.closest('#issueTableColumnMenu');
+      var menuKey = menu ? menu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+      handleIssueTableMenuAction(issueTableMenuAction.getAttribute('data-issue-table-action'), menuKey);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var issueTableFilterValue = event.target?.closest?.('[data-issue-table-filter-value]');
+    if (issueTableFilterValue) {
+      var filterMenu = issueTableFilterValue.closest('#issueTableColumnMenu');
+      var filterKey = filterMenu ? filterMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+      setIssueTableFilterValue(filterKey, issueTableFilterValue.value, issueTableFilterValue.checked);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var customColumnsButton = event.target?.closest?.('#issueTableCustomColumnsButton');
+    if (customColumnsButton) {
+      event.preventDefault();
+      issueTableState.customColumnMenuOpen = !issueTableState.customColumnMenuOpen;
+      issueTableState.openColumnKey = '';
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var customColumnsClose = event.target?.closest?.('[data-issue-custom-columns-close]');
+    if (customColumnsClose) {
+      event.preventDefault();
+      issueTableState.customColumnMenuOpen = false;
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var customColumnToggle = event.target?.closest?.('[data-issue-custom-column-toggle]');
+    if (customColumnToggle) {
+      setIssueTableCustomColumn(customColumnToggle.value, customColumnToggle.checked);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    if (
+      issueTableState.openColumnKey &&
+      !event.target?.closest?.('#issueTableColumnMenu') &&
+      !event.target?.closest?.('[data-issue-table-column]')
+    ) {
+      issueTableState.openColumnKey = '';
+      issueTableState.searchText = '';
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    if (
+      issueTableState.customColumnMenuOpen &&
+      !event.target?.closest?.('#issueTableCustomColumnsMenu') &&
+      !event.target?.closest?.('#issueTableCustomColumnsButton')
+    ) {
+      issueTableState.customColumnMenuOpen = false;
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    var row = event.target?.closest?.('#issueTableBody tr[data-issue-id]');
+    if (row) {
+      var issueId = row.getAttribute('data-issue-id');
+      if (issueId) {
+        selectedIssueTableId = issueId;
+        renderIssueTable(loadedIssues, selectedIssueTableId);
+        document.dispatchEvent(new CustomEvent('accissuetableselect', {
+          detail: {
+            issueId: issueId,
+            openSavedView: getOpenSavedViewOnSelectSetting()
+          }
+        }));
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleIssueTableInput(event) {
+    var targetDocument = event.target?.ownerDocument || document;
+
+    if (event.target && event.target.id === 'issueTableFilterSearch') {
+      issueTableState.searchText = event.target.value || '';
+      renderIssueTableColumnMenu(targetDocument);
+      var searchInput = getIssueTableElement(targetDocument, 'issueTableFilterSearch');
+      if (searchInput) {
+        searchInput.focus();
+        searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+      }
+      return true;
+    }
+
+    if (event.target?.matches?.('[data-issue-table-text-filter]')) {
+      var textMenu = event.target.closest('#issueTableColumnMenu');
+      var textKey = textMenu ? textMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+      setIssueTableTextFilter(textKey, event.target.value);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      var textInput = targetDocument.querySelector('[data-issue-table-text-filter]');
+      if (textInput) {
+        textInput.focus();
+        textInput.setSelectionRange(textInput.value.length, textInput.value.length);
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleIssueTableChange(event) {
+    if (event.target?.matches?.('[data-issue-table-date-filter]')) {
+      var dateMenu = event.target.closest('#issueTableColumnMenu');
+      var dateKey = dateMenu ? dateMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+      setIssueTableDateFilter(dateKey, event.target.getAttribute('data-issue-table-date-filter'), event.target.value);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    if (event.target?.matches?.('[data-issue-table-number-filter]')) {
+      var numberMenu = event.target.closest('#issueTableColumnMenu');
+      var numberKey = numberMenu ? numberMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;
+      setIssueTableNumberFilter(numberKey, event.target.getAttribute('data-issue-table-number-filter'), event.target.value);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleIssueTablePointerDown(event) {
+    var resizeHandle = event.target?.closest?.('[data-issue-table-resize]');
+    var dragHandle = event.target?.closest?.('[data-issue-table-drag]');
+
+    if (!resizeHandle && !dragHandle) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (dragHandle) {
+      var draggedColumnKey = dragHandle.getAttribute('data-issue-table-drag');
+      if (!draggedColumnKey) return true;
+
+      issueTableState.draggingColumn = {
+        key: draggedColumnKey,
+        document: event.target.ownerDocument || document
+      };
+
+      document.body.classList.add('dragging-issue-table-column');
+      event.target.ownerDocument?.body?.classList.add('dragging-issue-table-column');
+      return true;
+    }
+
+    var columnKey = resizeHandle.getAttribute('data-issue-table-resize');
+    var header = resizeHandle.closest('th');
+
+    if (!columnKey || !header) return true;
+
+    issueTableState.resizingColumn = {
+      key: columnKey,
+      startX: event.clientX,
+      startWidth: header.getBoundingClientRect().width,
+      document: event.target.ownerDocument || document
+    };
+
+    document.body.classList.add('resizing-issue-table-column');
+    event.target.ownerDocument?.body?.classList.add('resizing-issue-table-column');
+    return true;
+  }
+
+  function handleIssueTablePointerMove(event) {
+    var resizeInfo = issueTableState.resizingColumn;
+    var dragInfo = issueTableState.draggingColumn;
+
+    if (resizeInfo) {
+      var nextWidth = resizeInfo.startWidth + (event.clientX - resizeInfo.startX);
+      setIssueTableColumnWidth(resizeInfo.key, nextWidth);
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+      return true;
+    }
+
+    if (!dragInfo) return false;
+
+    var targetDocument = dragInfo.document || event.target?.ownerDocument || document;
+    var elementUnderPointer = targetDocument.elementFromPoint(event.clientX, event.clientY);
+    var targetHeader = elementUnderPointer?.closest?.('[data-issue-table-header]');
+    var targetColumnKey = targetHeader ? targetHeader.getAttribute('data-issue-table-header') : '';
+    var targetRect = targetHeader ? targetHeader.getBoundingClientRect() : null;
+    var placeAfterTarget = targetRect
+      ? event.clientX > targetRect.left + (targetRect.width / 2)
+      : false;
+
+    if (moveIssueTableColumn(dragInfo.key, targetColumnKey, placeAfterTarget)) {
+      renderIssueTable(loadedIssues, selectedIssueTableId);
+    }
+
+    return true;
+  }
+
+  function handleIssueTablePointerUp() {
+    if (!issueTableState.resizingColumn && !issueTableState.draggingColumn) return false;
+
+    var activeDocument =
+      issueTableState.resizingColumn?.document ||
+      issueTableState.draggingColumn?.document ||
+      document;
+
+    issueTableState.resizingColumn = null;
+    issueTableState.draggingColumn = null;
+    document.body.classList.remove('resizing-issue-table-column');
+    document.body.classList.remove('dragging-issue-table-column');
+    activeDocument?.body?.classList.remove('resizing-issue-table-column');
+    activeDocument?.body?.classList.remove('dragging-issue-table-column');
+    return true;
+  }
+
+  function bindIssueTableEvents(targetDocument) {
+    if (!targetDocument || targetDocument.__issueTableEventsBound) return;
+
+    targetDocument.addEventListener('click', function (event) {
+      handleIssueTableClick(event);
+    });
+
+    targetDocument.addEventListener('pointerdown', function (event) {
+      handleIssueTablePointerDown(event);
+    });
+
+    targetDocument.addEventListener('pointermove', function (event) {
+      handleIssueTablePointerMove(event);
+    });
+
+    targetDocument.addEventListener('pointerup', function () {
+      handleIssueTablePointerUp();
+    });
+
+    targetDocument.addEventListener('input', function (event) {
+      handleIssueTableInput(event);
+    });
+
+    targetDocument.addEventListener('change', function (event) {
+      handleIssueTableChange(event);
+    });
+
+    targetDocument.__issueTableEventsBound = true;
+  }
+
   async function saveCurrentIssueField(field) {
     try {
       setStatus('Saving issue...');
@@ -3183,6 +3724,8 @@
     });
 
     document.addEventListener('click', function (event) {
+      if (handleIssueTableClick(event)) return;
+
       var issueTableColumnButton = event.target?.closest?.('[data-issue-table-column]');
       if (issueTableColumnButton) {
         event.preventDefault();
@@ -3442,6 +3985,8 @@
     });
 
     document.addEventListener('pointerdown', function (event) {
+      if (handleIssueTablePointerDown(event)) return;
+
       var resizeHandle = event.target?.closest?.('[data-issue-table-resize]');
       var dragHandle = event.target?.closest?.('[data-issue-table-drag]');
 
@@ -3478,6 +4023,8 @@
     });
 
     document.addEventListener('pointermove', function (event) {
+      if (handleIssueTablePointerMove(event)) return;
+
       var resizeInfo = issueTableState.resizingColumn;
       var dragInfo = issueTableState.draggingColumn;
 
@@ -3504,6 +4051,8 @@
     });
 
     document.addEventListener('pointerup', function () {
+      if (handleIssueTablePointerUp()) return;
+
       if (!issueTableState.resizingColumn && !issueTableState.draggingColumn) return;
 
       issueTableState.resizingColumn = null;
@@ -3516,6 +4065,8 @@
       if (event.target && event.target.id === 'issueCommentBody') {
         updateCommentMentionPopup(event.target);
       }
+
+      if (handleIssueTableInput(event)) return;
 
       if (event.target && event.target.id === 'issueTableFilterSearch') {
         issueTableState.searchText = event.target.value || '';
@@ -3541,6 +4092,8 @@
     });
 
     document.addEventListener('change', function (event) {
+      if (handleIssueTableChange(event)) return;
+
       if (event.target?.matches?.('[data-issue-table-date-filter]')) {
         var dateMenu = event.target.closest('#issueTableColumnMenu');
         var dateKey = dateMenu ? dateMenu.getAttribute('data-issue-table-menu-key') : issueTableState.openColumnKey;

@@ -128,7 +128,9 @@ Open `public/js/ApsViewer.js`.
 
 Change the issue table:
 
-Open `public/js/Layout.js`. Search for `renderIssueTable`, `renderIssueTableHead`, or `issueTableState`.
+Open `public/js/Layout.js`. Search for `renderIssueTable`, `renderIssueTableHead`, `issueTableState`, or `toggleIssueTablePopout`.
+
+The project issue table can also open in a separate browser window. That pop-out still uses `Layout.js`; it does not have a separate app file.
 
 Change filters or sorting:
 

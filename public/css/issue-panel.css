@@ -1036,6 +1036,35 @@
   color: #1d4ed8;
 }
 
+.issueTablePopoutBody {
+  margin: 0;
+  min-width: 720px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+
+.issueTablePanelPopout {
+  height: 100vh;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.issueTablePanelPopout .issueTableWrapper {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.issueTablePanelPopout .issueTable {
+  min-width: 100%;
+}
+
 .issueTableColumnButton {
   width: 100%;
   min-height: 28px;
